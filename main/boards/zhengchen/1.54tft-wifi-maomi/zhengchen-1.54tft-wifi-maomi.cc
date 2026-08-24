@@ -6,6 +6,7 @@
 #include "codecs/no_audio_codec.h"
 #include "config.h"
 #include "led/single_led.h"
+#include "maomi_pet_core.h"
 #include "maomi_variant.h"
 #include "power_save_timer.h"
 #include "system_reset.h"
@@ -13,9 +14,12 @@
 
 #include <esp_lcd_panel_vendor.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
+
+#include <utility>
 
 #define TAG "ZHENGCHEN_1_54TFT_WIFI_MAOMI"
 
@@ -28,6 +32,11 @@ private:
     PowerSaveTimer* power_save_timer_ = nullptr;
     PowerManager* power_manager_ = nullptr;
     MaomiVariant maomi_variant_;
+    maomi::PetCore maomi_pet_core_;
+    esp_timer_handle_t maomi_poll_timer_ = nullptr;
+    DeviceState last_maomi_official_state_ = kDeviceStateUnknown;
+    int last_maomi_battery_level_ = -1;
+    uint8_t maomi_poll_divider_ = 0;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
 
@@ -44,7 +53,60 @@ private:
                 power_save_timer_->SetEnabled(true);
                 ESP_LOGI("PowerManager", "Charging stopped");
             }
+            if (maomi_variant_.IsEnabled()) {
+                maomi_pet_core_.Submit(maomi::Event::ChargingChanged(is_charging));
+            }
         });
+    }
+
+    void PollMaomiPetCore() {
+        const auto official_state = Application::GetInstance().GetDeviceState();
+        if (official_state != last_maomi_official_state_) {
+            last_maomi_official_state_ = official_state;
+            maomi_pet_core_.Submit(maomi::Event::OfficialStateChanged(official_state));
+        }
+
+        if (++maomi_poll_divider_ < 10) {
+            return;
+        }
+        maomi_poll_divider_ = 0;
+
+        const auto uptime_seconds = static_cast<uint32_t>(esp_timer_get_time() / 1000000);
+        maomi_pet_core_.Submit(maomi::Event::Tick(uptime_seconds));
+        const int battery_level = static_cast<int>(power_manager_->GetBatteryLevel());
+        if (battery_level != last_maomi_battery_level_) {
+            last_maomi_battery_level_ = battery_level;
+            maomi_pet_core_.Submit(maomi::Event::BatteryChanged(battery_level));
+        }
+    }
+
+    bool InitializeMaomiPetCore() {
+        last_maomi_official_state_ = Application::GetInstance().GetDeviceState();
+
+        const esp_timer_create_args_t timer_args = {
+            .callback =
+                [](void* arg) {
+                    static_cast<ZHENGCHEN_1_54TFT_WIFI_MAOMI*>(arg)->PollMaomiPetCore();
+                },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "maomi_poll",
+            .skip_unhandled_events = true,
+        };
+        const esp_err_t create_result = esp_timer_create(&timer_args, &maomi_poll_timer_);
+        if (create_result != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create Maomi poll timer: %s", esp_err_to_name(create_result));
+            return false;
+        }
+        const esp_err_t start_result = esp_timer_start_periodic(maomi_poll_timer_, 100000);
+        if (start_result != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start Maomi poll timer: %s", esp_err_to_name(start_result));
+            esp_timer_delete(maomi_poll_timer_);
+            maomi_poll_timer_ = nullptr;
+            return false;
+        }
+        maomi_pet_core_.Submit(maomi::Event::ChargingChanged(!power_manager_->IsDischarging()));
+        return true;
     }
 
     void InitializePowerSaveTimer() {
@@ -161,6 +223,10 @@ private:
     void InitializeMaomiVariant() {
         if (!maomi_variant_.Initialize()) {
             ESP_LOGW(TAG, "Maomi features disabled; continuing with base firmware");
+            return;
+        }
+        if (!InitializeMaomiPetCore()) {
+            ESP_LOGW(TAG, "Maomi pet core disabled; continuing with base firmware");
         }
     }
 
@@ -168,7 +234,25 @@ public:
     ZHENGCHEN_1_54TFT_WIFI_MAOMI()
         : boot_button_(BOOT_BUTTON_GPIO),
           volume_up_button_(VOLUME_UP_BUTTON_GPIO),
-          volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
+          volume_down_button_(VOLUME_DOWN_BUTTON_GPIO),
+          maomi_pet_core_(
+              [](std::function<void()>&& callback) {
+                  Application::GetInstance().Schedule(std::move(callback));
+              },
+              [](maomi::LogEvent event, const maomi::Snapshot& snapshot) {
+                  if (event == maomi::LogEvent::kQueuePressure) {
+                      ESP_LOGW(TAG,
+                               "event=maomi_queue_pressure queue_depth=%u submitted=%lu "
+                               "processed=%lu coalesced=%lu rejected=%lu evicted=%lu",
+                               static_cast<unsigned>(snapshot.queue_depth),
+                               static_cast<unsigned long>(snapshot.submitted),
+                               static_cast<unsigned long>(snapshot.processed),
+                               static_cast<unsigned long>(snapshot.coalesced),
+                               static_cast<unsigned long>(snapshot.rejected),
+                               static_cast<unsigned long>(snapshot.evicted));
+                  }
+              },
+              Application::GetInstance().GetDeviceState()) {
         InitializeSpi();
         InitializeSt7789Display();
         InitializePowerSaveTimer();
