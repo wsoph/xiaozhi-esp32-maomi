@@ -5,7 +5,13 @@
     "builds": [
         {
             "name": "zhengchen-1.54tft-wifi-maomi",
-            "sdkconfig_append": []
+            "sdkconfig_append": [
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+                "CONFIG_CUSTOM_WAKE_WORD=\"mao mi guo lai\"",
+                "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"猫咪过来\"",
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20",
+                "CONFIG_SR_MN_CN_MULTINET7_QUANT=y"
+            ]
         }
     ]
 }

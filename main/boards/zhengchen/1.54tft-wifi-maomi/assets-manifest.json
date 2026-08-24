@@ -1,0 +1,46 @@
+{
+    "schema_version": 1,
+    "board": "zhengchen-1.54tft-wifi-maomi",
+    "wake_word": {
+        "model": "mn7_cn",
+        "command": "mao mi guo lai",
+        "display": "猫咪过来",
+        "threshold": 0.2
+    },
+    "font": {
+        "builtin": "font_noto_sans_basic_20_4",
+        "file": "font_noto_sans_common_20_4.bin",
+        "bundle": "noto-v1"
+    },
+    "fallback_emoji": {
+        "collection": "noto-color-emoji_64",
+        "files": [
+            "angry.png",
+            "confident.png",
+            "confused.png",
+            "cool.png",
+            "crying.png",
+            "delicious.png",
+            "embarrassed.png",
+            "funny.png",
+            "happy.png",
+            "kissy.png",
+            "laughing.png",
+            "loving.png",
+            "neutral.png",
+            "relaxed.png",
+            "sad.png",
+            "shocked.png",
+            "silly.png",
+            "sleepy.png",
+            "surprised.png",
+            "thinking.png",
+            "winking.png"
+        ]
+    },
+    "extra_files": [],
+    "capacity": {
+        "partition_size_bytes": 8388608,
+        "minimum_free_percent": 10
+    }
+}
