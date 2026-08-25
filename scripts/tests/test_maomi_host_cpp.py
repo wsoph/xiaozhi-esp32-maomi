@@ -117,6 +117,15 @@ class MaomiHostCppTest(unittest.TestCase):
             ],
         )
 
+    def test_ui_mapping_contract(self):
+        self.compile_and_run(
+            "maomi-ui-test",
+            [
+                ROOT / "scripts" / "tests" / "maomi_ui_test.cc",
+                BOARD / "maomi_ui.cc",
+            ],
+        )
+
     def test_ogg_integrity_contract(self):
         self.compile_and_run(
             "ogg-demuxer-test",
