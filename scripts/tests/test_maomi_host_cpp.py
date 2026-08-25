@@ -107,6 +107,16 @@ class MaomiHostCppTest(unittest.TestCase):
             ],
         )
 
+    def test_clock_and_storage_contract(self):
+        self.compile_and_run(
+            "maomi-clock-storage-test",
+            [
+                ROOT / "scripts" / "tests" / "maomi_clock_storage_test.cc",
+                BOARD / "maomi_clock.cc",
+                BOARD / "maomi_storage.cc",
+            ],
+        )
+
     def test_ogg_integrity_contract(self):
         self.compile_and_run(
             "ogg-demuxer-test",
