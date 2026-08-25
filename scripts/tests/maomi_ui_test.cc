@@ -5,6 +5,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 
 namespace {
@@ -177,6 +178,100 @@ void TestInvalidOrInconsistentStateFailsClosed() {
     CHECK(unknown_plan.overlay == maomi::SystemOverlay::kUnknown);
 }
 
+void TestAnimationRefreshIsSinglePendingAndRateLimited() {
+    static_assert(!std::is_copy_constructible_v<maomi::AnimationRefreshGate>);
+
+    FakeAssetCatalog assets;
+    assets.Add("maomi_look.gif");
+    maomi::UiMapper mapper;
+    maomi::AnimationRefreshGate gate;
+    const auto curious = mapper.Resolve(IdleSnapshot(maomi::PetState::kCurious), false, assets);
+
+    gate.Configure(curious);
+    CHECK(gate.RequestFromTimer(0) == maomi::RefreshRequest::kAccepted);
+    for (int i = 0; i < 1000; ++i) {
+        CHECK(gate.RequestFromTimer(0) == maomi::RefreshRequest::kCoalesced);
+    }
+    auto snapshot = gate.GetSnapshot();
+    CHECK(snapshot.active);
+    CHECK(snapshot.pending_depth == 1);
+    CHECK(snapshot.maximum_pending_depth == 1);
+    CHECK(snapshot.accepted == 1);
+    CHECK(snapshot.coalesced == 1000);
+
+    CHECK(gate.ConsumeOnMainTask());
+    CHECK(!gate.ConsumeOnMainTask());
+    CHECK(gate.RequestFromTimer(curious.minimum_frame_interval_ms - 1) ==
+          maomi::RefreshRequest::kRateLimited);
+    CHECK(gate.RequestFromTimer(curious.minimum_frame_interval_ms) ==
+          maomi::RefreshRequest::kAccepted);
+}
+
+void TestOfficialPreemptionCancelsAnimationRefresh() {
+    FakeAssetCatalog assets;
+    assets.Add("maomi_sleep.gif");
+    maomi::UiMapper mapper;
+    maomi::AnimationRefreshGate gate;
+
+    const auto sleeping = mapper.Resolve(IdleSnapshot(maomi::PetState::kSleeping), false, assets);
+    gate.Configure(sleeping);
+    CHECK(gate.RequestFromTimer(1000) == maomi::RefreshRequest::kAccepted);
+    CHECK(gate.GetSnapshot().pending_depth == 1);
+
+    auto listening = IdleSnapshot(maomi::PetState::kSleeping);
+    listening.official_state = kDeviceStateListening;
+    listening.paused_by_official_state = true;
+    gate.Configure(mapper.Resolve(listening, false, assets));
+    CHECK(!gate.GetSnapshot().active);
+    CHECK(gate.GetSnapshot().pending_depth == 0);
+    CHECK(!gate.ConsumeOnMainTask());
+    CHECK(gate.RequestFromTimer(2000) == maomi::RefreshRequest::kInactive);
+}
+
+void TestSwitchingEqualRateAnimationsDropsStaleRefresh() {
+    FakeAssetCatalog assets;
+    assets.Add("maomi_look.gif");
+    assets.Add("maomi_charge.gif");
+    maomi::UiMapper mapper;
+    maomi::AnimationRefreshGate gate;
+
+    const auto curious = mapper.Resolve(IdleSnapshot(maomi::PetState::kCurious), false, assets);
+    const auto charging = mapper.Resolve(IdleSnapshot(maomi::PetState::kCharging), false, assets);
+    CHECK(curious.minimum_frame_interval_ms == charging.minimum_frame_interval_ms);
+
+    gate.Configure(curious);
+    CHECK(gate.RequestFromTimer(1000) == maomi::RefreshRequest::kAccepted);
+    gate.Configure(charging);
+    CHECK(gate.GetSnapshot().pending_depth == 0);
+    CHECK(gate.RequestFromTimer(1000) == maomi::RefreshRequest::kAccepted);
+}
+
+void TestEightHourAnimationLoadHasFixedRefreshBound() {
+    constexpr uint64_t kEightHoursMs = 8ULL * 60 * 60 * 1000;
+    constexpr uint64_t kTimerPeriodMs = 10;
+
+    maomi::UiRenderPlan fastest_allowed;
+    fastest_allowed.surface = maomi::UiSurface::kPet;
+    fastest_allowed.animated = true;
+    fastest_allowed.minimum_frame_interval_ms = maomi::kMinimumUiFrameIntervalMs;
+
+    maomi::AnimationRefreshGate gate;
+    gate.Configure(fastest_allowed);
+    for (uint64_t now_ms = 0; now_ms < kEightHoursMs; now_ms += kTimerPeriodMs) {
+        if (gate.RequestFromTimer(now_ms) == maomi::RefreshRequest::kAccepted) {
+            CHECK(gate.GetSnapshot().pending_depth == 1);
+            CHECK(gate.ConsumeOnMainTask());
+        }
+    }
+
+    const auto snapshot = gate.GetSnapshot();
+    const uint64_t maximum_refreshes = kEightHoursMs * maomi::kMaximumUiAnimationFps / 1000;
+    CHECK(snapshot.accepted <= maximum_refreshes);
+    CHECK(snapshot.consumed == snapshot.accepted);
+    CHECK(snapshot.pending_depth == 0);
+    CHECK(snapshot.maximum_pending_depth == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -184,6 +279,10 @@ int main() {
     TestMissingNonCriticalAssetsAlwaysUseOfficialFallbacks();
     TestOfficialAndHighTemperatureSurfacesPreemptWithoutAssetLookup();
     TestInvalidOrInconsistentStateFailsClosed();
+    TestAnimationRefreshIsSinglePendingAndRateLimited();
+    TestOfficialPreemptionCancelsAnimationRefresh();
+    TestSwitchingEqualRateAnimationsDropsStaleRefresh();
+    TestEightHourAnimationLoadHasFixedRefreshBound();
     std::cout << "maomi ui mapping tests passed" << std::endl;
     return 0;
 }

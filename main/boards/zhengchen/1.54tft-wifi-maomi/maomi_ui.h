@@ -4,12 +4,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 namespace maomi {
 
 constexpr size_t kPetUiStateCount = 11;
 constexpr uint8_t kMaxUiAnimationFrames = 4;
 constexpr uint8_t kUiFrameCacheLimit = 2;
+constexpr uint8_t kMaximumUiAnimationFps = 10;
 constexpr uint16_t kMinimumUiFrameIntervalMs = 100;
 
 enum class UiSurface : uint8_t {
@@ -66,6 +68,47 @@ public:
 
 private:
     static SystemOverlay OverlayFor(DeviceState state);
+};
+
+enum class RefreshRequest : uint8_t {
+    kAccepted,
+    kInactive,
+    kRateLimited,
+    kCoalesced,
+};
+
+struct AnimationGateSnapshot {
+    bool active = false;
+    uint8_t pending_depth = 0;
+    uint8_t maximum_pending_depth = 0;
+    uint16_t minimum_interval_ms = kMinimumUiFrameIntervalMs;
+    uint64_t requested = 0;
+    uint64_t accepted = 0;
+    uint64_t rate_limited = 0;
+    uint64_t coalesced = 0;
+    uint64_t consumed = 0;
+};
+
+// Timer callbacks call RequestFromTimer only. kAccepted authorizes one application-main-task
+// refresh; that task calls ConsumeOnMainTask after handling it. The single pending bit replaces
+// an animation queue, so a slow display cannot cause unbounded memory or callback growth.
+class AnimationRefreshGate {
+public:
+    AnimationRefreshGate() = default;
+    AnimationRefreshGate(const AnimationRefreshGate&) = delete;
+    AnimationRefreshGate& operator=(const AnimationRefreshGate&) = delete;
+
+    void Configure(const UiRenderPlan& plan);
+    RefreshRequest RequestFromTimer(uint64_t monotonic_ms);
+    bool ConsumeOnMainTask();
+    AnimationGateSnapshot GetSnapshot() const;
+
+private:
+    mutable std::mutex mutex_;
+    AnimationGateSnapshot snapshot_;
+    uint64_t last_accepted_ms_ = 0;
+    bool has_last_accepted_ = false;
+    PetState animation_state_ = PetState::kIdle;
 };
 
 }  // namespace maomi

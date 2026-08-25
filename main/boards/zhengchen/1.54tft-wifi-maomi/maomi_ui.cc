@@ -1,6 +1,7 @@
 #include "maomi_ui.h"
 
 #include <array>
+#include <limits>
 
 namespace maomi {
 namespace {
@@ -42,6 +43,12 @@ UiRenderPlan OfficialPlan(SystemOverlay overlay) {
     plan.surface = UiSurface::kOfficial;
     plan.overlay = overlay;
     return plan;
+}
+
+void SaturatingIncrement(uint64_t* value) {
+    if (*value < std::numeric_limits<uint64_t>::max()) {
+        ++*value;
+    }
 }
 
 }  // namespace
@@ -105,6 +112,69 @@ SystemOverlay UiMapper::OverlayFor(DeviceState state) {
         default:
             return SystemOverlay::kUnknown;
     }
+}
+
+void AnimationRefreshGate::Configure(const UiRenderPlan& plan) {
+    const bool active = plan.surface == UiSurface::kPet && plan.animated;
+    const uint16_t interval = plan.minimum_frame_interval_ms < kMinimumUiFrameIntervalMs
+                                  ? kMinimumUiFrameIntervalMs
+                                  : plan.minimum_frame_interval_ms;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!active) {
+        snapshot_.active = false;
+        snapshot_.pending_depth = 0;
+        has_last_accepted_ = false;
+        animation_state_ = PetState::kIdle;
+        return;
+    }
+    if (!snapshot_.active || snapshot_.minimum_interval_ms != interval ||
+        animation_state_ != plan.pet_state) {
+        snapshot_.pending_depth = 0;
+        has_last_accepted_ = false;
+    }
+    snapshot_.active = true;
+    snapshot_.minimum_interval_ms = interval;
+    animation_state_ = plan.pet_state;
+}
+
+RefreshRequest AnimationRefreshGate::RequestFromTimer(uint64_t monotonic_ms) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    SaturatingIncrement(&snapshot_.requested);
+    if (!snapshot_.active) {
+        return RefreshRequest::kInactive;
+    }
+    if (snapshot_.pending_depth != 0) {
+        SaturatingIncrement(&snapshot_.coalesced);
+        return RefreshRequest::kCoalesced;
+    }
+    if (has_last_accepted_ && (monotonic_ms < last_accepted_ms_ ||
+                               monotonic_ms - last_accepted_ms_ < snapshot_.minimum_interval_ms)) {
+        SaturatingIncrement(&snapshot_.rate_limited);
+        return RefreshRequest::kRateLimited;
+    }
+
+    has_last_accepted_ = true;
+    last_accepted_ms_ = monotonic_ms;
+    snapshot_.pending_depth = 1;
+    snapshot_.maximum_pending_depth = 1;
+    SaturatingIncrement(&snapshot_.accepted);
+    return RefreshRequest::kAccepted;
+}
+
+bool AnimationRefreshGate::ConsumeOnMainTask() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (snapshot_.pending_depth == 0) {
+        return false;
+    }
+    snapshot_.pending_depth = 0;
+    SaturatingIncrement(&snapshot_.consumed);
+    return true;
+}
+
+AnimationGateSnapshot AnimationRefreshGate::GetSnapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return snapshot_;
 }
 
 }  // namespace maomi
