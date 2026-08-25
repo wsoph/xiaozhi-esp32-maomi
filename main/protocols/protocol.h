@@ -11,8 +11,10 @@ struct AudioStreamPacket {
     int sample_rate = 0;
     int frame_duration = 0;
     uint32_t timestamp = 0;
+    uint32_t voice_upload_generation = 0;
     uint32_t playback_id = 0;
     uint32_t media_position_ms = 0;
+    bool playback_end = false;
     std::vector<uint8_t> payload;
 };
 

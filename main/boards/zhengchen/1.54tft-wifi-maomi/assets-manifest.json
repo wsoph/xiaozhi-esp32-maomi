@@ -38,7 +38,12 @@
             "winking.png"
         ]
     },
-    "extra_files": [],
+    "extra_files": [
+        {
+            "file": "maomi_wake.ogg",
+            "required": true
+        }
+    ],
     "capacity": {
         "partition_size_bytes": 8388608,
         "minimum_free_percent": 10

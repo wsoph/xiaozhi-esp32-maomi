@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,9 +82,22 @@ class MaomiAssetsTest(unittest.TestCase):
         self.assertEqual(manifest["fallback_emoji"]["collection"], "noto-color-emoji_64")
         self.assertEqual(manifest["fallback_emoji"]["files"], FALLBACK_EMOJIS)
         self.assertEqual(len(set(manifest["fallback_emoji"]["files"])), 21)
-        self.assertEqual(manifest["extra_files"], [])
+        self.assertIn(
+            {"file": "maomi_wake.ogg", "required": True},
+            manifest["extra_files"],
+        )
         self.assertEqual(manifest["capacity"]["partition_size_bytes"], 8 * 1024 * 1024)
         self.assertEqual(manifest["capacity"]["minimum_free_percent"], 10)
+
+    def test_local_wake_response_is_24_khz_mono_opus(self):
+        sound = (BOARD / "assets-extra" / "maomi_wake.ogg").read_bytes()
+
+        self.assertTrue(sound.startswith(b"OggS"))
+        opus_head = sound.find(b"OpusHead")
+        self.assertGreaterEqual(opus_head, 0)
+        self.assertEqual(sound[opus_head + 9], 1)
+        self.assertEqual(struct.unpack_from("<I", sound, opus_head + 12)[0], 24_000)
+        self.assertIn(b"OpusTags", sound)
 
     def test_board_sources_contain_no_deprecated_name(self):
         deprecated_chinese = "咪" * 2
@@ -121,6 +135,9 @@ class MaomiAssetsTest(unittest.TestCase):
             (fonts_root / "cbin").mkdir()
             (model_dir / "mn7_data").write_bytes(b"model")
             (fonts_root / "cbin" / manifest["font"]["file"]).write_bytes(b"font")
+            (extra_root / "maomi_wake.ogg").write_bytes(
+                (BOARD / "assets-extra" / "maomi_wake.ogg").read_bytes()
+            )
             for filename in manifest["fallback_emoji"]["files"]:
                 (emoji_dir / filename).write_bytes(b"png")
 

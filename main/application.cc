@@ -17,6 +17,8 @@
 #include <cJSON.h>
 #include <cstring>
 #include <limits>
+#include <new>
+#include <utility>
 
 #define TAG "Application"
 
@@ -87,6 +89,10 @@ void Application::Initialize() {
     };
     callbacks.on_playback_progress = [this](uint32_t playback_id, uint32_t media_position_ms) {
         notify_player_.OnPlaybackProgress(playback_id, media_position_ms);
+    };
+    callbacks.on_playback_finished = [this](uint32_t playback_id) {
+        pending_playback_finished_id_.store(playback_id, std::memory_order_release);
+        xEventGroupSetBits(event_group_, MAIN_EVENT_PLAYBACK_FINISHED);
     };
     audio_service_.SetCallbacks(callbacks);
 
@@ -179,7 +185,8 @@ void Application::Run() {
         MAIN_EVENT_VAD_CHANGE | MAIN_EVENT_CLOCK_TICK | MAIN_EVENT_ERROR |
         MAIN_EVENT_NETWORK_CONNECTED | MAIN_EVENT_NETWORK_DISCONNECTED | MAIN_EVENT_TOGGLE_CHAT |
         MAIN_EVENT_START_LISTENING | MAIN_EVENT_STOP_LISTENING | MAIN_EVENT_ACTIVATION_DONE |
-        MAIN_EVENT_STATE_CHANGED | MAIN_EVENT_PLAYBACK_DRAINED;
+        MAIN_EVENT_STATE_CHANGED | MAIN_EVENT_PLAYBACK_DRAINED | MAIN_EVENT_PLAYBACK_FINISHED |
+        MAIN_EVENT_BOARD_POLL;
 
     while (true) {
         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
@@ -222,6 +229,20 @@ void Application::Run() {
             }
         }
 
+        if (bits & MAIN_EVENT_PLAYBACK_FINISHED) {
+            const uint32_t playback_id =
+                pending_playback_finished_id_.exchange(0, std::memory_order_acq_rel);
+            if (playback_id != 0 && playback_finished_observer_) {
+                playback_finished_observer_(playback_id);
+            }
+        }
+
+        if (bits & MAIN_EVENT_BOARD_POLL) {
+            if (board_poll_observer_) {
+                board_poll_observer_();
+            }
+        }
+
         if (bits & MAIN_EVENT_TOGGLE_CHAT) {
             HandleToggleChatEvent();
         }
@@ -234,22 +255,21 @@ void Application::Run() {
             HandleStopListeningEvent();
         }
 
-        if (bits & MAIN_EVENT_SEND_AUDIO) {
-            while (auto packet = audio_service_.PopPacketFromSendQueue()) {
-                if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
-                    // Drop the remaining packets. Leaving them in the queue would
-                    // stall the Opus codec task (it waits for queue space), which in
-                    // turn deadlocks the whole audio input pipeline, as no new
-                    // MAIN_EVENT_SEND_AUDIO event would ever be triggered again.
-                    while (audio_service_.PopPacketFromSendQueue())
-                        ;
-                    break;
-                }
-            }
-        }
-
+        // Wake interception may invalidate queued microphone packets. Handle it
+        // before the send bit from the same event-group snapshot so stale audio
+        // cannot escape immediately before the interceptor clears the backlog.
         if (bits & MAIN_EVENT_WAKE_WORD_DETECTED) {
             HandleWakeWordDetectedEvent();
+        }
+
+        if (bits & MAIN_EVENT_SEND_AUDIO) {
+            DrainVoiceUploadQueue([this]() { return audio_service_.PopPacketFromSendQueue(); },
+                                  [this](uint32_t generation) {
+                                      return audio_service_.AcquireVoiceUploadLease(generation);
+                                  },
+                                  [this](std::unique_ptr<AudioStreamPacket> packet) {
+                                      return !protocol_ || protocol_->SendAudio(std::move(packet));
+                                  });
         }
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
@@ -879,13 +899,17 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
-    if (!protocol_) {
-        return;
-    }
-
     auto state = GetDeviceState();
     auto wake_word = audio_service_.GetLastWakeWord();
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
+
+    if (wake_word_interceptor_ && wake_word_interceptor_(wake_word)) {
+        return;
+    }
+
+    if (!protocol_) {
+        return;
+    }
 
     if (state == kDeviceStateIdle) {
         BeginWakeWordInvoke(wake_word);
@@ -902,6 +926,7 @@ void Application::HandleWakeWordDetectedEvent() {
             protocol_->SendStartListening(GetDefaultListeningMode());
             audio_service_.ResetDecoder();
             audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+            audio_service_.ResumeVoiceUpload();
             // Re-enable wake word detection as it was stopped by the detection itself
             audio_service_.EnableWakeWordDetection(true);
         } else {
@@ -915,7 +940,7 @@ void Application::HandleWakeWordDetectedEvent() {
     }
 }
 
-void Application::BeginWakeWordInvoke(const std::string& wake_word) {
+bool Application::BeginWakeWordInvoke(const std::string& wake_word) {
     // Must run in the main task with the device in idle state
     audio_service_.EncodeWakeWord();
 
@@ -926,17 +951,25 @@ void Application::BeginWakeWordInvoke(const std::string& wake_word) {
         // Wake word detection was stopped by the detection itself; restore it
         // so the device does not become unresponsive to wake words.
         audio_service_.EnableWakeWordDetection(true);
-        return;
+        return false;
     }
 
     if (!protocol_->IsAudioChannelOpened()) {
         // Schedule to let the state change be processed first (UI update),
         // then continue with OpenAudioChannel which may block for ~1 second
-        Schedule([this, wake_word]() { ContinueWakeWordInvoke(wake_word); });
-        return;
+        try {
+            Schedule([this, wake_word]() { ContinueWakeWordInvoke(wake_word); });
+        } catch (const std::bad_alloc&) {
+            ESP_LOGE(TAG, "Failed to schedule wake connection continuation");
+            SetDeviceState(kDeviceStateIdle);
+            audio_service_.EnableWakeWordDetection(true);
+            return false;
+        }
+        return true;
     }
     // Channel already opened, continue directly
     ContinueWakeWordInvoke(wake_word);
+    return GetDeviceState() != kDeviceStateIdle;
 }
 
 void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
@@ -1242,37 +1275,64 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
     }
 }
 
-void Application::WakeWordInvoke(const std::string& wake_word) {
+void Application::WakeWordInvoke(const std::string& wake_word) { TryWakeWordInvoke(wake_word); }
+
+bool Application::TryWakeWordInvokeFromMainTask(const std::string& wake_word) {
+    if (!protocol_ || GetDeviceState() != kDeviceStateIdle) {
+        return false;
+    }
+    try {
+        return BeginWakeWordInvoke(wake_word);
+    } catch (const std::bad_alloc&) {
+        ESP_LOGE(TAG, "Failed to start wake invocation");
+        if (GetDeviceState() == kDeviceStateConnecting) {
+            SetDeviceState(kDeviceStateIdle);
+        }
+        audio_service_.EnableWakeWordDetection(true);
+        return false;
+    }
+}
+
+bool Application::TryWakeWordInvoke(const std::string& wake_word) {
     if (!protocol_) {
-        return;
+        return false;
     }
 
     auto state = GetDeviceState();
 
-    if (state == kDeviceStateIdle) {
-        // May be called from outside the main task (e.g. board button
-        // callbacks), so schedule the invocation instead of running it here
-        Schedule([this, wake_word]() {
-            if (GetDeviceState() == kDeviceStateIdle) {
-                BeginWakeWordInvoke(wake_word);
-            }
-        });
-    } else if (state == kDeviceStateNotifying) {
-        Schedule([this, wake_word]() {
-            if (GetDeviceState() == kDeviceStateNotifying) {
-                StopNotification();
-                BeginWakeWordInvoke(wake_word);
-            }
-        });
-    } else if (state == kDeviceStateSpeaking) {
-        Schedule([this]() { AbortSpeaking(kAbortReasonNone); });
-    } else if (state == kDeviceStateListening) {
-        Schedule([this]() {
-            if (protocol_) {
-                protocol_->CloseAudioChannel();
-            }
-        });
+    try {
+        if (state == kDeviceStateIdle) {
+            // May be called from outside the main task (e.g. board button
+            // callbacks), so schedule the invocation instead of running it here
+            Schedule([this, wake_word]() {
+                if (GetDeviceState() == kDeviceStateIdle) {
+                    BeginWakeWordInvoke(wake_word);
+                }
+            });
+            return true;
+        } else if (state == kDeviceStateNotifying) {
+            Schedule([this, wake_word]() {
+                if (GetDeviceState() == kDeviceStateNotifying) {
+                    StopNotification();
+                    BeginWakeWordInvoke(wake_word);
+                }
+            });
+            return true;
+        } else if (state == kDeviceStateSpeaking) {
+            Schedule([this]() { AbortSpeaking(kAbortReasonNone); });
+            return true;
+        } else if (state == kDeviceStateListening) {
+            Schedule([this]() {
+                if (protocol_) {
+                    protocol_->CloseAudioChannel();
+                }
+            });
+            return true;
+        }
+    } catch (const std::bad_alloc&) {
+        ESP_LOGE(TAG, "Failed to schedule wake invocation");
     }
+    return false;
 }
 
 bool Application::CanEnterSleepMode() {
@@ -1336,6 +1396,20 @@ void Application::SetAecMode(AecMode mode) {
 }
 
 void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
+
+void Application::SetWakeWordInterceptor(std::function<bool(const std::string&)> interceptor) {
+    wake_word_interceptor_ = std::move(interceptor);
+}
+
+void Application::SetPlaybackFinishedObserver(std::function<void(uint32_t)> observer) {
+    playback_finished_observer_ = std::move(observer);
+}
+
+void Application::SetBoardPollObserver(std::function<void()> observer) {
+    board_poll_observer_ = std::move(observer);
+}
+
+void Application::RequestBoardPoll() { xEventGroupSetBits(event_group_, MAIN_EVENT_BOARD_POLL); }
 
 void Application::ResetProtocol() {
     Schedule([this]() {

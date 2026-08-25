@@ -1,6 +1,7 @@
 #include "../1.54tft-wifi/power_manager.h"
 #include "../1.54tft-wifi/zhengchen_lcd_display.h"
 #include "application.h"
+#include "assets.h"
 #include "assets/lang_config.h"
 #include "button.h"
 #include "codecs/no_audio_codec.h"
@@ -8,6 +9,7 @@
 #include "led/single_led.h"
 #include "maomi_pet_core.h"
 #include "maomi_variant.h"
+#include "maomi_wake.h"
 #include "power_save_timer.h"
 #include "system_reset.h"
 #include "wifi_board.h"
@@ -19,6 +21,8 @@
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 
+#include <new>
+#include <string_view>
 #include <utility>
 
 #define TAG "ZHENGCHEN_1_54TFT_WIFI_MAOMI"
@@ -33,12 +37,147 @@ private:
     PowerManager* power_manager_ = nullptr;
     MaomiVariant maomi_variant_;
     maomi::PetCore maomi_pet_core_;
+    maomi::WakeSequence maomi_wake_;
+    maomi::WakePollGate maomi_wake_poll_gate_;
+    uint32_t maomi_next_playback_id_ = 0;
     esp_timer_handle_t maomi_poll_timer_ = nullptr;
     DeviceState last_maomi_official_state_ = kDeviceStateUnknown;
     int last_maomi_battery_level_ = -1;
     uint8_t maomi_poll_divider_ = 0;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
+
+    static uint64_t MonotonicMs() { return static_cast<uint64_t>(esp_timer_get_time() / 1000); }
+
+    void StopMaomiVoiceUpload() {
+        auto& audio_service = Application::GetInstance().GetAudioService();
+        audio_service.EnableVoiceProcessing(false);
+        audio_service.DiscardVoiceUploadBacklog();
+    }
+
+    uint32_t NextMaomiPlaybackId() {
+        ++maomi_next_playback_id_;
+        if (maomi_next_playback_id_ == 0) {
+            ++maomi_next_playback_id_;
+        }
+        return maomi_next_playback_id_;
+    }
+
+    maomi::WakePlaybackStart StartMaomiLocalResponse() {
+        auto& audio_service = Application::GetInstance().GetAudioService();
+        audio_service.ResetDecoder();
+        const uint32_t playback_id = NextMaomiPlaybackId();
+
+        void* data = nullptr;
+        size_t size = 0;
+        if (Assets::GetInstance().GetAssetData("maomi_wake.ogg", data, size) && data != nullptr &&
+            audio_service.TryPlaySound(std::string_view(static_cast<const char*>(data), size),
+                                       false, playback_id)) {
+            return {maomi::WakePlaybackResult::kLocalStarted, playback_id};
+        }
+
+        if (Lang::Sounds::OGG_POPUP.empty()) {
+            return {maomi::WakePlaybackResult::kFailed, 0};
+        }
+        if (!audio_service.PlaySound(Lang::Sounds::OGG_POPUP)) {
+            return {maomi::WakePlaybackResult::kFailed, 0};
+        }
+        return {maomi::WakePlaybackResult::kFallbackCompleted, 0};
+    }
+
+    void RestoreMaomiWakeDetection() {
+        auto& app = Application::GetInstance();
+        if (app.GetDeviceState() == kDeviceStateIdle) {
+            app.GetAudioService().EnableWakeWordDetection(true);
+        }
+    }
+
+    void LogMaomiWake(maomi::WakeLogEvent event, const maomi::WakeSnapshot& snapshot) {
+        const char* event_name = "unknown";
+        switch (event) {
+            case maomi::WakeLogEvent::kLocalStarted:
+                event_name = "local_started";
+                break;
+            case maomi::WakeLogEvent::kFallbackCompleted:
+                event_name = "fallback_completed";
+                break;
+            case maomi::WakeLogEvent::kDuplicateSuppressed:
+                event_name = "duplicate_suppressed";
+                break;
+            case maomi::WakeLogEvent::kPlaybackFailed:
+                event_name = "playback_failed";
+                break;
+            case maomi::WakeLogEvent::kPlaybackTimedOut:
+                event_name = "playback_timed_out";
+                break;
+            case maomi::WakeLogEvent::kOfficialInvoked:
+                event_name = "official_invoked";
+                break;
+            case maomi::WakeLogEvent::kOfficialCompleted:
+                event_name = "official_completed";
+                break;
+            case maomi::WakeLogEvent::kRecovered:
+                event_name = "recovered";
+                break;
+            case maomi::WakeLogEvent::kAbandonedForOfficialState:
+                event_name = "official_state_preempted";
+                break;
+        }
+        ESP_LOGI(TAG,
+                 "event=maomi_wake_%s sequence_id=%lu phase=%u started=%lu fallback=%lu "
+                 "duplicates=%lu playback_failures=%lu official_invokes=%lu recoveries=%lu",
+                 event_name, static_cast<unsigned long>(snapshot.sequence_id),
+                 static_cast<unsigned>(snapshot.phase),
+                 static_cast<unsigned long>(snapshot.started_count),
+                 static_cast<unsigned long>(snapshot.fallback_count),
+                 static_cast<unsigned long>(snapshot.duplicate_count),
+                 static_cast<unsigned long>(snapshot.playback_failure_count),
+                 static_cast<unsigned long>(snapshot.official_invoke_count),
+                 static_cast<unsigned long>(snapshot.recovery_count));
+    }
+
+    void PollMaomiWake() {
+        if (!maomi_wake_.IsBusy() || !maomi_wake_poll_gate_.TryAcquire()) {
+            return;
+        }
+        Application::GetInstance().RequestBoardPoll();
+    }
+
+    bool InitializeMaomiWake() {
+        auto& app = Application::GetInstance();
+        try {
+            app.SetWakeWordInterceptor([this](const std::string& wake_word) {
+                auto& app = Application::GetInstance();
+                const auto state = app.GetDeviceState();
+                if (state == kDeviceStateIdle) {
+                    power_save_timer_->WakeUp();
+                }
+                const auto result = maomi_wake_.HandleWakeWord(wake_word, state, MonotonicMs());
+                if (result == maomi::WakeHandleResult::kStarted) {
+                    maomi_pet_core_.Submit(maomi::Event::UserWake());
+                }
+                return result != maomi::WakeHandleResult::kPassThrough;
+            });
+            app.SetPlaybackFinishedObserver([this](uint32_t playback_id) {
+                auto& app = Application::GetInstance();
+                maomi_wake_.HandlePlaybackFinished(MonotonicMs(), app.GetDeviceState(),
+                                                   playback_id);
+            });
+            app.SetBoardPollObserver([this]() {
+                auto& app = Application::GetInstance();
+                maomi_wake_.Poll(MonotonicMs(), app.GetDeviceState(),
+                                 app.GetAudioService().IsPlaybackIdle());
+                maomi_wake_poll_gate_.Release();
+            });
+            app.GetAudioService().SetDiscardVoiceUploadOnWake(true);
+            return true;
+        } catch (const std::bad_alloc&) {
+            app.SetWakeWordInterceptor({});
+            app.SetPlaybackFinishedObserver({});
+            app.SetBoardPollObserver({});
+            return false;
+        }
+    }
 
     void InitializePowerManager() {
         power_manager_ = new PowerManager(GPIO_NUM_9);
@@ -60,6 +199,8 @@ private:
     }
 
     void PollMaomiPetCore() {
+        PollMaomiWake();
+
         const auto official_state = Application::GetInstance().GetDeviceState();
         if (official_state != last_maomi_official_state_) {
             last_maomi_official_state_ = official_state;
@@ -145,6 +286,9 @@ private:
                 EnterWifiConfigMode();
                 return;
             }
+            if (maomi_wake_.IsBusy()) {
+                return;
+            }
             app.ToggleChatState();
         });
 
@@ -227,6 +371,10 @@ private:
         }
         if (!InitializeMaomiPetCore()) {
             ESP_LOGW(TAG, "Maomi pet core disabled; continuing with base firmware");
+            return;
+        }
+        if (!InitializeMaomiWake()) {
+            ESP_LOGW(TAG, "Maomi wake setup failed; continuing with base firmware");
         }
     }
 
@@ -252,7 +400,28 @@ public:
                                static_cast<unsigned long>(snapshot.evicted));
                   }
               },
-              Application::GetInstance().GetDeviceState()) {
+              Application::GetInstance().GetDeviceState()),
+          maomi_wake_({
+              .stop_voice_upload = [this]() { StopMaomiVoiceUpload(); },
+              .start_local_response = [this]() { return StartMaomiLocalResponse(); },
+              .cancel_playback =
+                  []() { Application::GetInstance().GetAudioService().ResetDecoder(); },
+              .invoke_official =
+                  [](const std::string& wake_word) {
+                      return Application::GetInstance().TryWakeWordInvokeFromMainTask(wake_word);
+                  },
+              .abort_official =
+                  []() {
+                      auto& app = Application::GetInstance();
+                      if (app.GetDeviceState() == kDeviceStateConnecting) {
+                          app.SetDeviceState(kDeviceStateIdle);
+                      }
+                  },
+              .restore_wake_detection = [this]() { RestoreMaomiWakeDetection(); },
+              .logger = [this](
+                            maomi::WakeLogEvent event,
+                            const maomi::WakeSnapshot& snapshot) { LogMaomiWake(event, snapshot); },
+          }) {
         InitializeSpi();
         InitializeSt7789Display();
         InitializePowerSaveTimer();
