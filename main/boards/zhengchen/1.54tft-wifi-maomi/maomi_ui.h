@@ -13,6 +13,8 @@ constexpr uint8_t kMaxUiAnimationFrames = 4;
 constexpr uint8_t kUiFrameCacheLimit = 2;
 constexpr uint8_t kMaximumUiAnimationFps = 10;
 constexpr uint16_t kMinimumUiFrameIntervalMs = 100;
+constexpr int kLowBatteryEnterPercent = 20;
+constexpr int kLowBatteryExitPercent = 25;
 
 enum class UiSurface : uint8_t {
     kPet,
@@ -58,6 +60,36 @@ struct UiRenderPlan {
     uint16_t minimum_frame_interval_ms = kMinimumUiFrameIntervalMs;
 };
 
+enum class PowerUiMode : uint8_t {
+    kNormal,
+    kLowBattery,
+    kCharging,
+    kFull,
+};
+
+struct PowerUiSample {
+    int battery_level = -1;
+    bool battery_level_valid = false;
+    bool external_power_connected = false;
+};
+
+struct PowerUiDecision {
+    PowerUiMode mode = PowerUiMode::kNormal;
+    PetState pet_state = PetState::kIdle;
+    bool override_pet_state = false;
+    bool allow_autonomous_audio = true;
+};
+
+// Stateful presentation policy only. Hardware sampling and protection remain owned by the
+// board's original PowerManager.
+class PowerUiPolicy {
+public:
+    PowerUiDecision Update(const PowerUiSample& sample);
+
+private:
+    bool low_battery_latched_ = false;
+};
+
 // Pure mapping policy: no LVGL calls, allocations, or image decoding. Call Resolve from the
 // application main task (PetCore observers already run there), then pass display_emotion to the
 // existing display only when surface is kPet.
@@ -65,6 +97,8 @@ class UiMapper {
 public:
     UiRenderPlan Resolve(const Snapshot& snapshot, bool high_temperature,
                          const UiAssetCatalog& assets) const;
+    UiRenderPlan Resolve(const Snapshot& snapshot, const PowerUiDecision& power,
+                         bool high_temperature, const UiAssetCatalog& assets) const;
 
 private:
     static SystemOverlay OverlayFor(DeviceState state);

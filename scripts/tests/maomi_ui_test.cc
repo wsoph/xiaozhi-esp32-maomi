@@ -178,6 +178,126 @@ void TestInvalidOrInconsistentStateFailsClosed() {
     CHECK(unknown_plan.overlay == maomi::SystemOverlay::kUnknown);
 }
 
+maomi::PowerUiSample PowerSample(int battery_level, bool external_power_connected,
+                                 bool battery_level_valid = true) {
+    maomi::PowerUiSample sample;
+    sample.battery_level = battery_level;
+    sample.battery_level_valid = battery_level_valid;
+    sample.external_power_connected = external_power_connected;
+    return sample;
+}
+
+void TestPowerUiWaitsForStableBatteryData() {
+    maomi::PowerUiPolicy policy;
+
+    const auto unplugged = policy.Update(PowerSample(0, false, false));
+    CHECK(unplugged.mode == maomi::PowerUiMode::kNormal);
+    CHECK(unplugged.override_pet_state);
+    CHECK(unplugged.pet_state == maomi::PetState::kIdle);
+    CHECK(unplugged.allow_autonomous_audio);
+
+    const auto plugged = policy.Update(PowerSample(100, true, false));
+    CHECK(plugged.mode == maomi::PowerUiMode::kNormal);
+    CHECK(plugged.override_pet_state);
+    CHECK(plugged.pet_state == maomi::PetState::kIdle);
+    CHECK(plugged.allow_autonomous_audio);
+}
+
+void TestLowBatteryUsesTwentyToTwentyFivePercentHysteresis() {
+    maomi::PowerUiPolicy policy;
+    constexpr std::array<int, 6> kLevels = {21, 20, 21, 19, 22, 25};
+    constexpr std::array<maomi::PowerUiMode, 6> kModes = {
+        maomi::PowerUiMode::kNormal,     maomi::PowerUiMode::kLowBattery,
+        maomi::PowerUiMode::kLowBattery, maomi::PowerUiMode::kLowBattery,
+        maomi::PowerUiMode::kLowBattery, maomi::PowerUiMode::kNormal,
+    };
+
+    for (size_t i = 0; i < kLevels.size(); ++i) {
+        const auto decision = policy.Update(PowerSample(kLevels[i], false));
+        CHECK(decision.mode == kModes[i]);
+        CHECK(decision.allow_autonomous_audio == (kModes[i] == maomi::PowerUiMode::kNormal));
+        if (kModes[i] == maomi::PowerUiMode::kLowBattery) {
+            CHECK(decision.override_pet_state);
+            CHECK(decision.pet_state == maomi::PetState::kLowBattery);
+        }
+    }
+}
+
+void TestExternalPowerDeterministicallyMapsChargingFullAndUnplugged() {
+    maomi::PowerUiPolicy policy;
+
+    const auto charging = policy.Update(PowerSample(80, true));
+    CHECK(charging.mode == maomi::PowerUiMode::kCharging);
+    CHECK(charging.override_pet_state);
+    CHECK(charging.pet_state == maomi::PetState::kCharging);
+    CHECK(!charging.allow_autonomous_audio);
+
+    const auto unplugged = policy.Update(PowerSample(80, false));
+    CHECK(unplugged.mode == maomi::PowerUiMode::kNormal);
+    CHECK(!unplugged.override_pet_state);
+    CHECK(unplugged.allow_autonomous_audio);
+
+    const auto full = policy.Update(PowerSample(100, true));
+    CHECK(full.mode == maomi::PowerUiMode::kFull);
+    CHECK(full.override_pet_state);
+    CHECK(full.pet_state == maomi::PetState::kFull);
+    CHECK(!full.allow_autonomous_audio);
+
+    const auto full_but_unplugged = policy.Update(PowerSample(100, false));
+    CHECK(full_but_unplugged.mode == maomi::PowerUiMode::kNormal);
+    CHECK(!full_but_unplugged.override_pet_state);
+    CHECK(full_but_unplugged.allow_autonomous_audio);
+}
+
+void TestChargingOverridesLowBatteryWithoutClearingItsLatch() {
+    maomi::PowerUiPolicy policy;
+
+    CHECK(policy.Update(PowerSample(20, false)).mode == maomi::PowerUiMode::kLowBattery);
+    CHECK(policy.Update(PowerSample(20, true)).mode == maomi::PowerUiMode::kCharging);
+    CHECK(policy.Update(PowerSample(21, false)).mode == maomi::PowerUiMode::kLowBattery);
+    CHECK(policy.Update(PowerSample(25, false)).mode == maomi::PowerUiMode::kNormal);
+}
+
+void TestOfficialErrorAndHighTemperaturePreemptChargingPresentation() {
+    FakeAssetCatalog assets;
+    assets.Add("maomi_charge.gif");
+    maomi::PowerUiPolicy power_policy;
+    maomi::UiMapper mapper;
+    const auto charging = power_policy.Update(PowerSample(80, true));
+
+    auto fatal = IdleSnapshot(maomi::PetState::kIdle);
+    fatal.official_state = kDeviceStateFatalError;
+    fatal.paused_by_official_state = true;
+    const auto fatal_plan = mapper.Resolve(fatal, charging, false, assets);
+    CHECK(fatal_plan.surface == maomi::UiSurface::kOfficial);
+    CHECK(fatal_plan.overlay == maomi::SystemOverlay::kFatalError);
+
+    const auto hot_plan =
+        mapper.Resolve(IdleSnapshot(maomi::PetState::kIdle), charging, true, assets);
+    CHECK(hot_plan.surface == maomi::UiSurface::kOfficial);
+    CHECK(hot_plan.overlay == maomi::SystemOverlay::kHighTemperature);
+}
+
+void TestPowerPresentationOverridesPetCorePowerEdgeCases() {
+    FakeAssetCatalog assets;
+    assets.Add("maomi_charge.gif");
+    maomi::PowerUiPolicy power_policy;
+    maomi::UiMapper mapper;
+
+    auto stale_low_battery = IdleSnapshot(maomi::PetState::kLowBattery);
+    const auto charging = power_policy.Update(PowerSample(20, true));
+    const auto charging_plan = mapper.Resolve(stale_low_battery, charging, false, assets);
+    CHECK(charging_plan.surface == maomi::UiSurface::kPet);
+    CHECK(charging_plan.pet_state == maomi::PetState::kCharging);
+    CHECK(std::strcmp(charging_plan.display_emotion, "maomi_charge") == 0);
+
+    const auto unstable = power_policy.Update(PowerSample(0, false, false));
+    const auto unstable_plan = mapper.Resolve(stale_low_battery, unstable, false, assets);
+    CHECK(unstable_plan.surface == maomi::UiSurface::kPet);
+    CHECK(unstable_plan.pet_state == maomi::PetState::kIdle);
+    CHECK(std::strcmp(unstable_plan.display_emotion, "neutral") == 0);
+}
+
 void TestAnimationRefreshIsSinglePendingAndRateLimited() {
     static_assert(!std::is_copy_constructible_v<maomi::AnimationRefreshGate>);
 
@@ -279,6 +399,12 @@ int main() {
     TestMissingNonCriticalAssetsAlwaysUseOfficialFallbacks();
     TestOfficialAndHighTemperatureSurfacesPreemptWithoutAssetLookup();
     TestInvalidOrInconsistentStateFailsClosed();
+    TestPowerUiWaitsForStableBatteryData();
+    TestLowBatteryUsesTwentyToTwentyFivePercentHysteresis();
+    TestExternalPowerDeterministicallyMapsChargingFullAndUnplugged();
+    TestChargingOverridesLowBatteryWithoutClearingItsLatch();
+    TestOfficialErrorAndHighTemperaturePreemptChargingPresentation();
+    TestPowerPresentationOverridesPetCorePowerEdgeCases();
     TestAnimationRefreshIsSinglePendingAndRateLimited();
     TestOfficialPreemptionCancelsAnimationRefresh();
     TestSwitchingEqualRateAnimationsDropsStaleRefresh();

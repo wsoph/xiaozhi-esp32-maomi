@@ -53,8 +53,49 @@ void SaturatingIncrement(uint64_t* value) {
 
 }  // namespace
 
+PowerUiDecision PowerUiPolicy::Update(const PowerUiSample& sample) {
+    if (!sample.battery_level_valid || sample.battery_level < 0 || sample.battery_level > 100) {
+        return {
+            .mode = PowerUiMode::kNormal,
+            .pet_state = PetState::kIdle,
+            .override_pet_state = true,
+            .allow_autonomous_audio = true,
+        };
+    }
+
+    if (sample.battery_level <= kLowBatteryEnterPercent) {
+        low_battery_latched_ = true;
+    } else if (sample.battery_level >= kLowBatteryExitPercent) {
+        low_battery_latched_ = false;
+    }
+
+    if (sample.external_power_connected) {
+        const bool full = sample.battery_level == 100;
+        return {
+            .mode = full ? PowerUiMode::kFull : PowerUiMode::kCharging,
+            .pet_state = full ? PetState::kFull : PetState::kCharging,
+            .override_pet_state = true,
+            .allow_autonomous_audio = false,
+        };
+    }
+    if (low_battery_latched_) {
+        return {
+            .mode = PowerUiMode::kLowBattery,
+            .pet_state = PetState::kLowBattery,
+            .override_pet_state = true,
+            .allow_autonomous_audio = false,
+        };
+    }
+    return {};
+}
+
 UiRenderPlan UiMapper::Resolve(const Snapshot& snapshot, bool high_temperature,
                                const UiAssetCatalog& assets) const {
+    return Resolve(snapshot, PowerUiDecision{}, high_temperature, assets);
+}
+
+UiRenderPlan UiMapper::Resolve(const Snapshot& snapshot, const PowerUiDecision& power,
+                               bool high_temperature, const UiAssetCatalog& assets) const {
     if (high_temperature) {
         return OfficialPlan(SystemOverlay::kHighTemperature);
     }
@@ -64,7 +105,7 @@ UiRenderPlan UiMapper::Resolve(const Snapshot& snapshot, bool high_temperature,
         return OfficialPlan(overlay == SystemOverlay::kNone ? SystemOverlay::kUnknown : overlay);
     }
 
-    const auto& resource = ResourceFor(snapshot.state);
+    const auto& resource = ResourceFor(power.override_pet_state ? power.pet_state : snapshot.state);
     const bool available = assets.HasAsset(resource.asset_file);
 
     UiRenderPlan plan;
