@@ -59,7 +59,7 @@ PowerUiDecision PowerUiPolicy::Update(const PowerUiSample& sample) {
             .mode = PowerUiMode::kNormal,
             .pet_state = PetState::kIdle,
             .override_pet_state = true,
-            .allow_autonomous_audio = true,
+            .allow_autonomous_audio = !sample.external_power_connected,
         };
     }
 

@@ -200,7 +200,7 @@ void TestPowerUiWaitsForStableBatteryData() {
     CHECK(plugged.mode == maomi::PowerUiMode::kNormal);
     CHECK(plugged.override_pet_state);
     CHECK(plugged.pet_state == maomi::PetState::kIdle);
-    CHECK(plugged.allow_autonomous_audio);
+    CHECK(!plugged.allow_autonomous_audio);
 }
 
 void TestLowBatteryUsesTwentyToTwentyFivePercentHysteresis() {
