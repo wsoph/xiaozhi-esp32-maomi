@@ -7,10 +7,16 @@
 #include "codecs/no_audio_codec.h"
 #include "config.h"
 #include "led/single_led.h"
+#include "maomi_autonomy.h"
+#include "maomi_bond.h"
+#include "maomi_clock.h"
 #include "maomi_pet_core.h"
+#include "maomi_storage.h"
+#include "maomi_tools.h"
 #include "maomi_ui.h"
 #include "maomi_variant.h"
 #include "maomi_wake.h"
+#include "mcp_server.h"
 #include "power_save_timer.h"
 #include "system_reset.h"
 #include "wifi_board.h"
@@ -22,7 +28,11 @@
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 
+#include <atomic>
+#include <ctime>
+#include <memory>
 #include <new>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -32,6 +42,8 @@ namespace {
 
 constexpr uint8_t kMaomiBatteryWarmupSamples = 4;
 constexpr float kHighTemperatureThresholdCelsius = 75.0f;
+constexpr uint32_t kMaomiAutonomyRandomSeed = 0x4D414F4Du;
+constexpr uint64_t kMaomiInteractionVisibleDurationMs = 4'000;
 
 class FirmwareUiAssetCatalog final : public maomi::UiAssetCatalog {
 public:
@@ -58,19 +70,35 @@ private:
     PowerManager* power_manager_ = nullptr;
     MaomiVariant maomi_variant_;
     maomi::PetCore maomi_pet_core_;
+    maomi::NvsStorageBackend maomi_storage_backend_;
+    maomi::StateStorage maomi_storage_;
+    maomi::ReliableClock maomi_clock_;
+    std::unique_ptr<maomi::BondTracker> maomi_bond_;
+    maomi::AutonomyController maomi_autonomy_{kMaomiAutonomyRandomSeed};
     maomi::UiMapper maomi_ui_mapper_;
     maomi::PowerUiPolicy maomi_power_ui_policy_;
     FirmwareUiAssetCatalog maomi_ui_assets_;
     maomi::WakeSequence maomi_wake_;
     maomi::WakePollGate maomi_wake_poll_gate_;
     uint32_t maomi_next_playback_id_ = 0;
+    uint32_t maomi_local_sound_playback_id_ = 0;
     esp_timer_handle_t maomi_poll_timer_ = nullptr;
+    std::atomic<bool> maomi_policy_poll_pending_{false};
     DeviceState last_maomi_official_state_ = kDeviceStateUnknown;
     int last_maomi_battery_level_ = -1;
     uint8_t maomi_battery_warmup_samples_ = 0;
     bool maomi_external_power_connected_ = false;
     bool maomi_high_temperature_ = false;
     uint8_t maomi_poll_divider_ = 0;
+    bool maomi_runtime_ready_ = false;
+    bool last_maomi_time_valid_ = false;
+    uint64_t maomi_last_clock_observe_second_ = UINT64_MAX;
+    bool maomi_autonomy_sound_playing_ = false;
+    uint8_t maomi_next_meow_sound_ = 0;
+    std::optional<maomi::PetAction> maomi_active_interaction_;
+    uint64_t maomi_interaction_remaining_ms_ = 0;
+    uint64_t maomi_interaction_last_update_ms_ = 0;
+    std::optional<maomi::PetAction> maomi_pending_interaction_sound_;
     std::string_view last_maomi_display_emotion_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
@@ -91,9 +119,84 @@ private:
         return maomi_next_playback_id_;
     }
 
+    bool HasMaomiSound(const char* filename) const {
+        void* data = nullptr;
+        size_t size = 0;
+        return filename != nullptr && Assets::GetInstance().GetAssetData(filename, data, size) &&
+               data != nullptr && size != 0;
+    }
+
+    bool TryPlayMaomiSound(const char* filename, bool autonomy_sound) {
+        if (maomi_local_sound_playback_id_ != 0 || !HasMaomiSound(filename)) {
+            return false;
+        }
+        auto& audio_service = Application::GetInstance().GetAudioService();
+        if (!audio_service.IsPlaybackIdle()) {
+            return false;
+        }
+
+        void* data = nullptr;
+        size_t size = 0;
+        if (!Assets::GetInstance().GetAssetData(filename, data, size) || data == nullptr ||
+            size == 0) {
+            return false;
+        }
+        const uint32_t playback_id = NextMaomiPlaybackId();
+        if (!audio_service.TryPlaySound(std::string_view(static_cast<const char*>(data), size),
+                                        false, playback_id)) {
+            return false;
+        }
+        maomi_local_sound_playback_id_ = playback_id;
+        maomi_autonomy_sound_playing_ = autonomy_sound;
+        return true;
+    }
+
+    void CancelTrackedMaomiSound() {
+        if (maomi_local_sound_playback_id_ == 0) {
+            return;
+        }
+        Application::GetInstance().GetAudioService().ResetDecoder();
+        maomi_local_sound_playback_id_ = 0;
+        maomi_autonomy_sound_playing_ = false;
+    }
+
+    static const char* InteractionSoundName(maomi::PetAction action) {
+        switch (action) {
+            case maomi::PetAction::kPet:
+                return "maomi_meow_1.ogg";
+            case maomi::PetAction::kFeed:
+                return "maomi_meow_2.ogg";
+            case maomi::PetAction::kPlay:
+                return "maomi_meow_1.ogg";
+        }
+        return nullptr;
+    }
+
+    void TryPlayPendingInteractionSound(const maomi::Snapshot& snapshot) {
+        if (!maomi_pending_interaction_sound_.has_value() || snapshot.paused_by_official_state ||
+            snapshot.priority != maomi::PetPriority::kInteraction) {
+            return;
+        }
+        const auto action = *maomi_pending_interaction_sound_;
+        const bool state_matches =
+            (action == maomi::PetAction::kPet && snapshot.state == maomi::PetState::kHappy) ||
+            (action == maomi::PetAction::kFeed && snapshot.state == maomi::PetState::kEating) ||
+            (action == maomi::PetAction::kPlay && snapshot.state == maomi::PetState::kPlaying);
+        if (!state_matches) {
+            return;
+        }
+        if (TryPlayMaomiSound(InteractionSoundName(action), false)) {
+            maomi_pending_interaction_sound_.reset();
+        }
+    }
+
     maomi::WakePlaybackStart StartMaomiLocalResponse() {
         auto& audio_service = Application::GetInstance().GetAudioService();
-        audio_service.ResetDecoder();
+        if (maomi_local_sound_playback_id_ == 0) {
+            audio_service.ResetDecoder();
+        } else {
+            CancelTrackedMaomiSound();
+        }
         const uint32_t playback_id = NextMaomiPlaybackId();
 
         void* data = nullptr;
@@ -183,11 +286,16 @@ private:
                 const auto result = maomi_wake_.HandleWakeWord(wake_word, state, MonotonicMs());
                 if (result == maomi::WakeHandleResult::kStarted) {
                     maomi_pet_core_.Submit(maomi::Event::UserWake());
+                    UpdateMaomiAutonomyOnMainTask(maomi::ActivitySource::kWakeWord);
                 }
                 return result != maomi::WakeHandleResult::kPassThrough;
             });
             app.SetPlaybackFinishedObserver([this](uint32_t playback_id) {
                 auto& app = Application::GetInstance();
+                if (playback_id == maomi_local_sound_playback_id_) {
+                    maomi_local_sound_playback_id_ = 0;
+                    maomi_autonomy_sound_playing_ = false;
+                }
                 maomi_wake_.HandlePlaybackFinished(MonotonicMs(), app.GetDeviceState(),
                                                    playback_id);
             });
@@ -224,6 +332,7 @@ private:
             last_maomi_display_emotion_ = {};
             return;
         }
+        TryPlayPendingInteractionSound(snapshot);
         if (last_maomi_display_emotion_ == plan.display_emotion) {
             return;
         }
@@ -258,8 +367,295 @@ private:
         });
     }
 
+    static bool SaveIsPending(maomi::SaveResult result) {
+        return result == maomi::SaveResult::kDeferred ||
+               result == maomi::SaveResult::kRateLimited || result == maomi::SaveResult::kFailed ||
+               result == maomi::SaveResult::kWriteBlocked ||
+               result == maomi::SaveResult::kInvalidState;
+    }
+
+    void ObserveMaomiClockOnMainTask(uint64_t monotonic_ms) {
+        const uint64_t current_second = monotonic_ms / 1000;
+        if (current_second == maomi_last_clock_observe_second_) {
+            return;
+        }
+        maomi_last_clock_observe_second_ = current_second;
+
+        const std::time_t now = std::time(nullptr);
+        std::tm local_time = {};
+        const bool has_local_time = localtime_r(&now, &local_time) != nullptr;
+        maomi::TimeSample sample;
+        sample.server_time_set = has_local_time && local_time.tm_year + 1900 >=
+                                                       maomi::ReliableClock::kMinimumTrustedYear;
+        sample.local_time = {
+            .year = local_time.tm_year + 1900,
+            .month = local_time.tm_mon + 1,
+            .day = local_time.tm_mday,
+            .hour = local_time.tm_hour,
+            .minute = local_time.tm_min,
+            .second = local_time.tm_sec,
+        };
+        sample.monotonic_ms = monotonic_ms;
+        maomi_clock_.Observe(sample);
+
+        const bool time_valid = maomi_clock_.GetSnapshot().valid;
+        if (time_valid != last_maomi_time_valid_) {
+            last_maomi_time_valid_ = time_valid;
+            maomi_pet_core_.Submit(maomi::Event::TimeValidityChanged(time_valid));
+        }
+
+        if (maomi_bond_ && maomi_bond_->ObserveTime(maomi_clock_)) {
+            const auto merged = maomi_bond_->MergePersistentState(maomi_storage_.GetState());
+            maomi_storage_.Update(merged, maomi::WriteImportance::kNormal, monotonic_ms);
+        }
+        maomi_storage_.FlushIfDue(monotonic_ms);
+    }
+
+    static maomi::PetState PetStateForAction(maomi::PetAction action) {
+        switch (action) {
+            case maomi::PetAction::kPet:
+                return maomi::PetState::kHappy;
+            case maomi::PetAction::kFeed:
+                return maomi::PetState::kEating;
+            case maomi::PetAction::kPlay:
+                return maomi::PetState::kPlaying;
+        }
+        return maomi::PetState::kIdle;
+    }
+
+    static maomi::BondAction BondActionForPetAction(maomi::PetAction action) {
+        switch (action) {
+            case maomi::PetAction::kPet:
+                return maomi::BondAction::kPet;
+            case maomi::PetAction::kFeed:
+                return maomi::BondAction::kFeed;
+            case maomi::PetAction::kPlay:
+                return maomi::BondAction::kPlay;
+        }
+        return maomi::BondAction::kCount;
+    }
+
+    static maomi::PetState PetStateForAutonomyAction(maomi::AutonomyAction action) {
+        switch (action) {
+            case maomi::AutonomyAction::kBlink:
+            case maomi::AutonomyAction::kLookAround:
+                return maomi::PetState::kCurious;
+            case maomi::AutonomyAction::kBecomeSleepy:
+                return maomi::PetState::kSleepy;
+            case maomi::AutonomyAction::kSleepBreath:
+                return maomi::PetState::kSleeping;
+            case maomi::AutonomyAction::kNone:
+                return maomi::PetState::kIdle;
+        }
+        return maomi::PetState::kIdle;
+    }
+
+    void ApplyMaomiAutonomyDecision(const maomi::AutonomySnapshot& before,
+                                    const maomi::AutonomyDecision& decision,
+                                    const maomi::AutonomySnapshot& after) {
+        const bool action_ended = decision.stopped_action != maomi::AutonomyAction::kNone ||
+                                  (before.active_action != maomi::AutonomyAction::kNone &&
+                                   after.active_action == maomi::AutonomyAction::kNone);
+        if (action_ended) {
+            maomi_pet_core_.ReleaseExpression(maomi::PetPriority::kAutonomous);
+        }
+        if (decision.started_action != maomi::AutonomyAction::kNone) {
+            maomi_pet_core_.RequestExpression(PetStateForAutonomyAction(decision.started_action),
+                                              maomi::PetPriority::kAutonomous, false);
+        }
+
+        if (decision.restore_display) {
+            GetBacklight()->RestoreBrightness();
+        }
+        if (decision.enter_low_brightness) {
+            GetBacklight()->SetBrightness(1);
+        }
+
+        if (decision.stopped_sound != maomi::AutonomySound::kNone &&
+            maomi_autonomy_sound_playing_) {
+            Application::GetInstance().GetAudioService().ResetDecoder();
+            maomi_local_sound_playback_id_ = 0;
+            maomi_autonomy_sound_playing_ = false;
+        }
+        if (decision.started_sound == maomi::AutonomySound::kPlayLocalMeow) {
+            const char* filename =
+                maomi_next_meow_sound_++ % 2 == 0 ? "maomi_meow_1.ogg" : "maomi_meow_2.ogg";
+            TryPlayMaomiSound(filename, true);
+        }
+    }
+
+    void UpdateMaomiAutonomyOnMainTask(maomi::ActivitySource activity) {
+        if (!maomi_runtime_ready_) {
+            return;
+        }
+        const uint64_t monotonic_ms = MonotonicMs();
+        ObserveMaomiClockOnMainTask(monotonic_ms);
+        const auto pet_snapshot = maomi_pet_core_.GetSnapshot();
+        TryPlayPendingInteractionSound(pet_snapshot);
+        UpdateMaomiInteractionLifetime(monotonic_ms, pet_snapshot);
+        const auto before = maomi_autonomy_.GetSnapshot();
+        const maomi::AutonomyInputs inputs = {
+            .official_idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle,
+            .higher_priority_active = pet_snapshot.priority >= maomi::PetPriority::kReminder &&
+                                      pet_snapshot.priority < maomi::PetPriority::kAutonomous,
+            .activity = activity,
+            .clock = maomi_clock_.GetSnapshot(),
+            .charging = pet_snapshot.charging,
+            .battery_level = pet_snapshot.battery_level,
+            .manual_quiet = maomi_storage_.GetState().manual_quiet,
+        };
+        const auto decision = maomi_autonomy_.Update(monotonic_ms, inputs);
+        const auto after = maomi_autonomy_.GetSnapshot();
+        ApplyMaomiAutonomyDecision(before, decision, after);
+    }
+
+    void RequestMaomiPolicyPoll() {
+        bool expected = false;
+        if (!maomi_policy_poll_pending_.compare_exchange_strong(expected, true)) {
+            return;
+        }
+        Application::GetInstance().Schedule([this]() {
+            maomi_policy_poll_pending_.store(false);
+            UpdateMaomiAutonomyOnMainTask(maomi::ActivitySource::kNone);
+        });
+    }
+
+    void UpdateMaomiInteractionLifetime(uint64_t monotonic_ms,
+                                        const maomi::Snapshot& pet_snapshot) {
+        if (!maomi_active_interaction_.has_value()) {
+            return;
+        }
+        if (monotonic_ms < maomi_interaction_last_update_ms_) {
+            maomi_interaction_last_update_ms_ = monotonic_ms;
+            return;
+        }
+        const uint64_t elapsed_ms = monotonic_ms - maomi_interaction_last_update_ms_;
+        maomi_interaction_last_update_ms_ = monotonic_ms;
+        if (pet_snapshot.paused_by_official_state ||
+            pet_snapshot.priority != maomi::PetPriority::kInteraction) {
+            return;
+        }
+        if (elapsed_ms < maomi_interaction_remaining_ms_) {
+            maomi_interaction_remaining_ms_ -= elapsed_ms;
+            return;
+        }
+
+        maomi_interaction_remaining_ms_ = 0;
+        maomi_active_interaction_.reset();
+        maomi_pending_interaction_sound_.reset();
+        maomi_pet_core_.ReleaseExpression(maomi::PetPriority::kInteraction);
+    }
+
+    maomi::InteractionToolResult HandleMaomiInteraction(maomi::PetAction action) {
+        maomi::InteractionToolResult result;
+        result.action = action;
+        if (!maomi_bond_) {
+            return result;
+        }
+
+        const auto submit =
+            maomi_pet_core_.Submit(maomi::Event::Interaction(PetStateForAction(action)));
+        if (submit == maomi::SubmitResult::kRejected) {
+            result.state = maomi::ToolOperationState::kRejected;
+            result.bond_points = maomi_bond_->GetSnapshot(maomi_clock_).total_points;
+            return result;
+        }
+
+        const auto bond_update = maomi_bond_->Record(BondActionForPetAction(action), maomi_clock_);
+        maomi::SaveResult save_result = maomi::SaveResult::kNoChanges;
+        if (bond_update.persistent_state_changed) {
+            const auto merged = maomi_bond_->MergePersistentState(maomi_storage_.GetState());
+            save_result =
+                maomi_storage_.Update(merged, maomi::WriteImportance::kNormal, MonotonicMs());
+        }
+        result.state = maomi::ToolOperationState::kQueued;
+        result.points_added = bond_update.points_added;
+        result.bond_points = maomi_bond_->GetSnapshot(maomi_clock_).total_points;
+        result.persistence_pending =
+            bond_update.persistent_state_changed && SaveIsPending(save_result);
+
+        maomi_active_interaction_ = action;
+        maomi_interaction_remaining_ms_ = kMaomiInteractionVisibleDurationMs;
+        maomi_interaction_last_update_ms_ = MonotonicMs();
+
+        const char* sound = InteractionSoundName(action);
+        result.sound_queued = !maomi_pending_interaction_sound_.has_value() && HasMaomiSound(sound);
+        if (result.sound_queued) {
+            maomi_pending_interaction_sound_ = action;
+        }
+        UpdateMaomiAutonomyOnMainTask(maomi::ActivitySource::kPetInteraction);
+        return result;
+    }
+
+    maomi::PetToolSnapshot GetMaomiToolSnapshot() const {
+        if (!maomi_bond_) {
+            return {};
+        }
+        const auto pet = maomi_pet_core_.GetSnapshot();
+        const auto bond = maomi_bond_->GetSnapshot(maomi_clock_);
+        return {
+            .bond_points = bond.total_points,
+            .bond_level = bond.level,
+            .companion_days = bond.companion_days,
+            .mood = pet.state,
+            .battery_level = pet.battery_level,
+            .charging = pet.charging,
+            .manual_quiet = maomi_storage_.GetState().manual_quiet,
+            .active_reminders = 0,
+        };
+    }
+
+    maomi::QuietToolResult SetMaomiQuiet(bool enabled) {
+        maomi::QuietToolResult result;
+        auto state = maomi_storage_.GetState();
+        state.manual_quiet = enabled;
+        const auto save =
+            maomi_storage_.Update(state, maomi::WriteImportance::kImportant, MonotonicMs());
+        if (save == maomi::SaveResult::kWriteBlocked || save == maomi::SaveResult::kInvalidState ||
+            (save == maomi::SaveResult::kFailed &&
+             maomi_storage_.GetState().manual_quiet != enabled)) {
+            result.enabled = maomi_storage_.GetState().manual_quiet;
+            return result;
+        }
+        result.state = maomi::ToolOperationState::kCompleted;
+        result.enabled = maomi_storage_.GetState().manual_quiet;
+        result.persistence_pending = SaveIsPending(save);
+        UpdateMaomiAutonomyOnMainTask(maomi::ActivitySource::kNone);
+        return result;
+    }
+
+    bool InitializeMaomiState() {
+        const auto load = maomi_storage_.Load(MonotonicMs());
+        try {
+            maomi_bond_ = std::make_unique<maomi::BondTracker>(load.state);
+        } catch (const std::bad_alloc&) {
+            ESP_LOGE(TAG, "Failed to allocate Maomi relationship state");
+            return false;
+        }
+        ObserveMaomiClockOnMainTask(MonotonicMs());
+        return true;
+    }
+
+    bool InitializeMaomiTools() {
+        try {
+            maomi::RegisterPetTools(
+                McpServer::GetInstance(),
+                {
+                    .interact =
+                        [this](maomi::PetAction action) { return HandleMaomiInteraction(action); },
+                    .get_status = [this]() { return GetMaomiToolSnapshot(); },
+                    .set_quiet = [this](bool enabled) { return SetMaomiQuiet(enabled); },
+                });
+            return true;
+        } catch (const std::exception& error) {
+            ESP_LOGE(TAG, "Failed to register Maomi MCP tools: %s", error.what());
+            return false;
+        }
+    }
+
     void PollMaomiPetCore() {
         PollMaomiWake();
+        RequestMaomiPolicyPoll();
 
         const auto official_state = Application::GetInstance().GetDeviceState();
         if (official_state != last_maomi_official_state_) {
@@ -343,6 +739,11 @@ private:
         power_save_timer_->SetEnabled(true);
     }
 
+    void ScheduleMaomiActivity(maomi::ActivitySource activity) {
+        Application::GetInstance().Schedule(
+            [this, activity]() { UpdateMaomiAutonomyOnMainTask(activity); });
+    }
+
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
         buscfg.mosi_io_num = DISPLAY_SDA;
@@ -357,6 +758,7 @@ private:
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            ScheduleMaomiActivity(maomi::ActivitySource::kButton);
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
@@ -370,6 +772,7 @@ private:
 
         boot_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
+            ScheduleMaomiActivity(maomi::ActivitySource::kButton);
             auto& app = Application::GetInstance();
             app.SetDeviceState(kDeviceStateWifiConfiguring);
             EnterWifiConfigMode();
@@ -377,6 +780,7 @@ private:
 
         volume_up_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            ScheduleMaomiActivity(maomi::ActivitySource::kButton);
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() + 10;
             if (volume > 100) {
@@ -388,12 +792,14 @@ private:
 
         volume_up_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
+            ScheduleMaomiActivity(maomi::ActivitySource::kButton);
             GetAudioCodec()->SetOutputVolume(100);
             GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
         });
 
         volume_down_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            ScheduleMaomiActivity(maomi::ActivitySource::kButton);
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() - 10;
             if (volume < 0) {
@@ -405,6 +811,7 @@ private:
 
         volume_down_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
+            ScheduleMaomiActivity(maomi::ActivitySource::kButton);
             GetAudioCodec()->SetOutputVolume(0);
             GetDisplay()->ShowNotification(Lang::Strings::MUTED);
         });
@@ -445,9 +852,17 @@ private:
             ESP_LOGW(TAG, "Maomi features disabled; continuing with base firmware");
             return;
         }
+        if (!InitializeMaomiState()) {
+            ESP_LOGW(TAG, "Maomi saved state unavailable; continuing with base firmware");
+            return;
+        }
         if (!InitializeMaomiPetCore()) {
             ESP_LOGW(TAG, "Maomi pet core disabled; continuing with base firmware");
             return;
+        }
+        maomi_runtime_ready_ = true;
+        if (!InitializeMaomiTools()) {
+            ESP_LOGW(TAG, "Maomi MCP tools unavailable; local pet features remain enabled");
         }
         if (!InitializeMaomiWake()) {
             ESP_LOGW(TAG, "Maomi wake setup failed; continuing with base firmware");
@@ -477,6 +892,12 @@ public:
                   }
               },
               Application::GetInstance().GetDeviceState()),
+          maomi_storage_(maomi_storage_backend_,
+                         [](maomi::StorageLogEvent event, const char* context) {
+                             ESP_LOGW(TAG, "event=maomi_storage status=%u context=%s",
+                                      static_cast<unsigned>(event),
+                                      context == nullptr ? "" : context);
+                         }),
           maomi_wake_({
               .stop_voice_upload = [this]() { StopMaomiVoiceUpload(); },
               .start_local_response = [this]() { return StartMaomiLocalResponse(); },
