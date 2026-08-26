@@ -8,6 +8,7 @@
 #include "config.h"
 #include "led/single_led.h"
 #include "maomi_pet_core.h"
+#include "maomi_ui.h"
 #include "maomi_variant.h"
 #include "maomi_wake.h"
 #include "power_save_timer.h"
@@ -27,6 +28,26 @@
 
 #define TAG "ZHENGCHEN_1_54TFT_WIFI_MAOMI"
 
+namespace {
+
+constexpr uint8_t kMaomiBatteryWarmupSamples = 4;
+constexpr float kHighTemperatureThresholdCelsius = 75.0f;
+
+class FirmwareUiAssetCatalog final : public maomi::UiAssetCatalog {
+public:
+    bool HasAsset(const char* filename) const override {
+        if (filename == nullptr || filename[0] == '\0') {
+            return false;
+        }
+        void* data = nullptr;
+        size_t size = 0;
+        return Assets::GetInstance().GetAssetData(filename, data, size) && data != nullptr &&
+               size != 0;
+    }
+};
+
+}  // namespace
+
 class ZHENGCHEN_1_54TFT_WIFI_MAOMI : public WifiBoard {
 private:
     Button boot_button_;
@@ -37,13 +58,20 @@ private:
     PowerManager* power_manager_ = nullptr;
     MaomiVariant maomi_variant_;
     maomi::PetCore maomi_pet_core_;
+    maomi::UiMapper maomi_ui_mapper_;
+    maomi::PowerUiPolicy maomi_power_ui_policy_;
+    FirmwareUiAssetCatalog maomi_ui_assets_;
     maomi::WakeSequence maomi_wake_;
     maomi::WakePollGate maomi_wake_poll_gate_;
     uint32_t maomi_next_playback_id_ = 0;
     esp_timer_handle_t maomi_poll_timer_ = nullptr;
     DeviceState last_maomi_official_state_ = kDeviceStateUnknown;
     int last_maomi_battery_level_ = -1;
+    uint8_t maomi_battery_warmup_samples_ = 0;
+    bool maomi_external_power_connected_ = false;
+    bool maomi_high_temperature_ = false;
     uint8_t maomi_poll_divider_ = 0;
+    std::string_view last_maomi_display_emotion_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
 
@@ -179,22 +207,54 @@ private:
         }
     }
 
+    void RenderMaomiUi(const maomi::Snapshot& snapshot) {
+        if (!maomi_variant_.IsEnabled() || !display_->IsSetupUICalled()) {
+            return;
+        }
+
+        const maomi::PowerUiSample power_sample = {
+            .battery_level = snapshot.battery_level,
+            .battery_level_valid = snapshot.battery_level >= 0,
+            .external_power_connected = maomi_external_power_connected_,
+        };
+        const auto power = maomi_power_ui_policy_.Update(power_sample);
+        const auto plan =
+            maomi_ui_mapper_.Resolve(snapshot, power, maomi_high_temperature_, maomi_ui_assets_);
+        if (plan.surface != maomi::UiSurface::kPet) {
+            last_maomi_display_emotion_ = {};
+            return;
+        }
+        if (last_maomi_display_emotion_ == plan.display_emotion) {
+            return;
+        }
+        display_->SetEmotion(plan.display_emotion);
+        last_maomi_display_emotion_ = plan.display_emotion;
+    }
+
     void InitializePowerManager() {
         power_manager_ = new PowerManager(GPIO_NUM_9);
-        power_manager_->OnTemperatureChanged(
-            [this](float chip_temp) { display_->UpdateHighTempWarning(chip_temp); });
+        power_manager_->OnTemperatureChanged([this](float chip_temp) {
+            Application::GetInstance().Schedule([this, chip_temp]() {
+                maomi_high_temperature_ = chip_temp >= kHighTemperatureThresholdCelsius;
+                display_->UpdateHighTempWarning(chip_temp);
+                RenderMaomiUi(maomi_pet_core_.GetSnapshot());
+            });
+        });
 
         power_manager_->OnChargingStatusChanged([this](bool is_charging) {
-            if (is_charging) {
-                power_save_timer_->SetEnabled(false);
-                ESP_LOGI("PowerManager", "Charging started");
-            } else {
-                power_save_timer_->SetEnabled(true);
-                ESP_LOGI("PowerManager", "Charging stopped");
-            }
-            if (maomi_variant_.IsEnabled()) {
-                maomi_pet_core_.Submit(maomi::Event::ChargingChanged(is_charging));
-            }
+            Application::GetInstance().Schedule([this, is_charging]() {
+                maomi_external_power_connected_ = is_charging;
+                if (is_charging) {
+                    power_save_timer_->SetEnabled(false);
+                    ESP_LOGI("PowerManager", "Charging started");
+                } else {
+                    power_save_timer_->SetEnabled(true);
+                    ESP_LOGI("PowerManager", "Charging stopped");
+                }
+                if (maomi_variant_.IsEnabled()) {
+                    maomi_pet_core_.Submit(maomi::Event::ChargingChanged(is_charging));
+                }
+            });
         });
     }
 
@@ -214,6 +274,12 @@ private:
 
         const auto uptime_seconds = static_cast<uint32_t>(esp_timer_get_time() / 1000000);
         maomi_pet_core_.Submit(maomi::Event::Tick(uptime_seconds));
+        if (maomi_battery_warmup_samples_ < kMaomiBatteryWarmupSamples) {
+            ++maomi_battery_warmup_samples_;
+            if (maomi_battery_warmup_samples_ < kMaomiBatteryWarmupSamples) {
+                return;
+            }
+        }
         const int battery_level = static_cast<int>(power_manager_->GetBatteryLevel());
         if (battery_level != last_maomi_battery_level_) {
             last_maomi_battery_level_ = battery_level;
@@ -239,14 +305,24 @@ private:
             ESP_LOGE(TAG, "Failed to create Maomi poll timer: %s", esp_err_to_name(create_result));
             return false;
         }
-        const esp_err_t start_result = esp_timer_start_periodic(maomi_poll_timer_, 100000);
-        if (start_result != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start Maomi poll timer: %s", esp_err_to_name(start_result));
+        const int ui_observer_id = maomi_pet_core_.AddObserver(
+            [this](const maomi::Snapshot& snapshot) { RenderMaomiUi(snapshot); });
+        if (ui_observer_id < 0) {
+            ESP_LOGE(TAG, "Failed to register Maomi UI observer");
             esp_timer_delete(maomi_poll_timer_);
             maomi_poll_timer_ = nullptr;
             return false;
         }
-        maomi_pet_core_.Submit(maomi::Event::ChargingChanged(!power_manager_->IsDischarging()));
+        const esp_err_t start_result = esp_timer_start_periodic(maomi_poll_timer_, 100000);
+        if (start_result != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start Maomi poll timer: %s", esp_err_to_name(start_result));
+            maomi_pet_core_.RemoveObserver(ui_observer_id);
+            esp_timer_delete(maomi_poll_timer_);
+            maomi_poll_timer_ = nullptr;
+            return false;
+        }
+        maomi_external_power_connected_ = !power_manager_->IsDischarging();
+        maomi_pet_core_.Submit(maomi::Event::ChargingChanged(maomi_external_power_connected_));
         return true;
     }
 
