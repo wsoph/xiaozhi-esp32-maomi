@@ -745,6 +745,7 @@ elseif(CONFIG_BOARD_TYPE_ZHENGCHEN_1_54TFT_WIFI_MAOMI)
     set(MAOMI_ASSETS_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/assets-manifest.json")
     set(MAOMI_ASSETS_VALIDATOR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/validate_assets.py")
     set(DEFAULT_ASSETS_EXTRA_FILES "${MAOMI_ASSETS_EXTRA_DIR}")
+    set(MAOMI_INDEX_EXTRA_IMAGES ON)
 elseif(CONFIG_BOARD_TYPE_MINSI_K08_DUAL)
     set(BOARD_DIR "minsi-k08-dual")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
@@ -1298,6 +1299,10 @@ function(build_default_assets_bin)
             "${DEFAULT_ASSETS_EXTRA_FILES}/*"
         )
         list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${DEFAULT_ASSETS_EXTRA_DEPENDENCIES})
+    endif()
+
+    if(MAOMI_INDEX_EXTRA_IMAGES)
+        list(APPEND BUILD_ARGS "--index_extra_images")
     endif()
 
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")

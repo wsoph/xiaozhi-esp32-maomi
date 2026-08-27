@@ -257,7 +257,11 @@ def process_extra_files(extra_files_dir, assets_dir):
     
     # Copy each file from input directory to build/assets directory
     for root, dirs, files in os.walk(extra_files_dir):
-        for file in files:
+        dirs[:] = sorted(
+            (directory for directory in dirs if not directory.startswith('.')),
+            key=str.casefold,
+        )
+        for file in sorted(files, key=str.casefold):
             # Skip hidden files and directories
             if file.startswith('.'):
                 continue
@@ -272,6 +276,22 @@ def process_extra_files(extra_files_dir, assets_dir):
         print(f"Processed {len(extra_files_list)} extra files from: {extra_files_dir}")
     
     return extra_files_list
+
+
+def merge_extra_image_index(emoji_collection, extra_files, enabled=False):
+    """Add explicitly enabled extra PNG/GIF files to the emoji index."""
+    merged = list(emoji_collection or [])
+    if not enabled:
+        return merged
+
+    indexed_names = {item.get("name") for item in merged}
+    for filename in sorted(extra_files or [], key=str.casefold):
+        stem, extension = os.path.splitext(filename)
+        if extension.casefold() not in ('.png', '.gif') or stem in indexed_names:
+            continue
+        merged.append({"name": stem, "file": filename})
+        indexed_names.add(stem)
+    return merged
 
 
 def generate_index_json(assets_dir, srmodels, text_font, emoji_collection, extra_files=None,
@@ -741,7 +761,8 @@ def get_emoji_collection_path(default_emoji_collection, noto_fonts_path, project
 
 def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font_path,
                             emoji_collection_path, extra_files_path, output_path,
-                            multinet_model_info=None, font_bundle_id=None):
+                            multinet_model_info=None, font_bundle_id=None,
+                            index_extra_images=False):
     """
     Build assets using integrated functions (no external dependencies)
     """
@@ -763,6 +784,9 @@ def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font
         text_font = process_text_font(text_font_path, assets_dir) if text_font_path else None
         emoji_collection = process_emoji_collection(emoji_collection_path, assets_dir) if emoji_collection_path else None
         extra_files = process_extra_files(extra_files_path, assets_dir) if extra_files_path else None
+        emoji_collection = merge_extra_image_index(
+            emoji_collection, extra_files, enabled=index_extra_images
+        )
         
         # Generate index.json
         generate_index_json(assets_dir, srmodels, text_font, emoji_collection, extra_files,
@@ -812,6 +836,11 @@ def main():
     parser.add_argument('--esp_sr_model_path', help='Path to ESP-SR model directory')
     parser.add_argument('--noto_fonts_path', help='Path to noto-fonts component directory')
     parser.add_argument('--extra_files', help='Path to extra files directory to be included in assets')
+    parser.add_argument(
+        '--index_extra_images',
+        action='store_true',
+        help='Index PNG/GIF files from --extra_files as display emotions',
+    )
     
     args = parser.parse_args()
     
@@ -831,6 +860,7 @@ def main():
     print(f"  sdkconfig: {args.sdkconfig}")
     print(f"  builtin_text_font: {args.builtin_text_font}")
     print(f"  emoji_collection: {args.emoji_collection}")
+    print(f"  index_extra_images: {args.index_extra_images}")
     print(f"  output: {args.output}")
     
     # Read wake word type configuration from sdkconfig
@@ -925,7 +955,8 @@ def main():
     # Build the assets
     success = build_assets_integrated(
         wakenet_model_paths, multinet_model_paths, text_font_path, emoji_collection_path,
-        extra_files_path, args.output, multinet_model_info, font_bundle_id)
+        extra_files_path, args.output, multinet_model_info, font_bundle_id,
+        args.index_extra_images)
     
     if not success:
         sys.exit(1)

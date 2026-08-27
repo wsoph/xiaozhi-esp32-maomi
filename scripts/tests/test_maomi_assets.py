@@ -115,8 +115,20 @@ class MaomiAssetsTest(unittest.TestCase):
         cmake = (ROOT / "main" / "CMakeLists.txt").read_text(encoding="utf-8")
 
         self.assertIn('set(DEFAULT_ASSETS_EXTRA_FILES "${MAOMI_ASSETS_EXTRA_DIR}")', cmake)
+        self.assertEqual(cmake.count("set(MAOMI_INDEX_EXTRA_IMAGES ON)"), 1)
+        self.assertIn('list(APPEND BUILD_ARGS "--index_extra_images")', cmake)
         self.assertIn("validate_assets.py", cmake)
         self.assertIn('"--assets-bin" "${GENERATED_ASSETS_BIN}"', cmake)
+
+    def test_reminders_use_the_dedicated_prompt_sound(self):
+        board_source = (BOARD / "zhengchen-1.54tft-wifi-maomi.cc").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'constexpr char kMaomiReminderSoundName[] = "maomi_prompt.ogg";',
+            board_source,
+        )
 
     def test_source_validation_fails_without_the_wake_model_but_allows_optional_files(self):
         validator = load_validator()

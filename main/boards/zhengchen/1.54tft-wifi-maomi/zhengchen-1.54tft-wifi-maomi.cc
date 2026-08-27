@@ -46,7 +46,7 @@ constexpr float kHighTemperatureThresholdCelsius = 75.0f;
 constexpr uint32_t kMaomiAutonomyRandomSeed = 0x4D414F4Du;
 constexpr uint64_t kMaomiInteractionVisibleDurationMs = 4'000;
 constexpr uint64_t kMaomiReminderVisibleDurationMs = 4'000;
-constexpr char kMaomiReminderSoundName[] = "maomi_wake.ogg";
+constexpr char kMaomiReminderSoundName[] = "maomi_prompt.ogg";
 
 class FirmwareUiAssetCatalog final : public maomi::UiAssetCatalog {
 public:
