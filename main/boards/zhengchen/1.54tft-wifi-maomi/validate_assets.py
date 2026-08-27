@@ -11,6 +11,8 @@ from pathlib import Path
 ENTRY_NAME_BYTES = 32
 ENTRY_SIZE = 44
 HEADER_SIZE = 12
+CUSTOM_IMAGE_SIZE = (128, 128)
+MAX_LOCAL_SOUND_GRANULE = 2 * 48_000
 
 
 class AssetValidationError(RuntimeError):
@@ -55,11 +57,17 @@ def validate_manifest(manifest):
 
     extra_files = manifest.get("extra_files", [])
     _require(isinstance(extra_files, list), "extra_files must be a list")
+    extra_filenames = []
     for item in extra_files:
         _require(isinstance(item, dict), "each extra file must be an object")
         filename = item.get("file", "")
         _require(filename and Path(filename).name == filename, "extra file must be a flat filename")
         _require(isinstance(item.get("required"), bool), "extra file required flag must be boolean")
+        extra_filenames.append(filename)
+    _require(
+        len(extra_filenames) == len(set(extra_filenames)),
+        "extra asset filenames must be unique",
+    )
 
     capacity = manifest.get("capacity", {})
     _require(capacity.get("partition_size_bytes", 0) > 0, "assets partition size is required")
@@ -69,6 +77,49 @@ def validate_manifest(manifest):
     serialized = json.dumps(manifest, ensure_ascii=False).casefold()
     for deprecated in _deprecated_terms():
         _require(deprecated.casefold() not in serialized, "deprecated wake word is present")
+
+
+def _validate_extra_asset(path):
+    data = path.read_bytes()
+    extension = path.suffix.casefold()
+    if extension == ".png":
+        _require(
+            len(data) >= 24 and data[:8] == b"\x89PNG\r\n\x1a\n",
+            f"invalid PNG asset: {path}",
+        )
+        _require(
+            struct.unpack_from(">II", data, 16) == CUSTOM_IMAGE_SIZE,
+            f"PNG asset must be 128x128: {path}",
+        )
+    elif extension == ".gif":
+        _require(
+            len(data) >= 10 and data[:6] in (b"GIF87a", b"GIF89a"),
+            f"invalid GIF asset: {path}",
+        )
+        _require(
+            struct.unpack_from("<HH", data, 6) == CUSTOM_IMAGE_SIZE,
+            f"GIF asset must be 128x128: {path}",
+        )
+        _require(data.count(b"\x21\xf9\x04") >= 2, f"GIF asset is not animated: {path}")
+    elif extension == ".ogg":
+        opus_head = data.find(b"OpusHead")
+        _require(data.startswith(b"OggS") and opus_head >= 0, f"invalid Ogg Opus asset: {path}")
+        _require(opus_head + 16 <= len(data), f"truncated Opus header: {path}")
+        _require(data[opus_head + 9] == 1, f"local sound must be mono: {path}")
+        _require(
+            struct.unpack_from("<I", data, opus_head + 12)[0] == 24_000,
+            f"local sound must declare 24 kHz input: {path}",
+        )
+        granules = [
+            struct.unpack_from("<Q", data, offset + 6)[0]
+            for offset in range(len(data) - 14)
+            if data[offset : offset + 4] == b"OggS"
+        ]
+        _require(granules, f"Ogg Opus asset has no pages: {path}")
+        _require(
+            max(granules) <= MAX_LOCAL_SOUND_GRANULE,
+            f"local sound exceeds two seconds: {path}",
+        )
 
 
 def validate_sources(manifest, esp_sr_model_path, noto_fonts_path, extra_files_path):
@@ -96,12 +147,32 @@ def validate_sources(manifest, esp_sr_model_path, noto_fonts_path, extra_files_p
     for item in manifest["extra_files"]:
         source = extra_files_path / item["file"]
         if source.is_file():
+            _validate_extra_asset(source)
             continue
         message = f"extra asset is missing: {source}"
         if item["required"]:
             raise AssetValidationError(message)
         warnings.append(message)
     return warnings
+
+
+def validate_emoji_index(manifest, indexed_emojis, files):
+    names = [item.get("name") for item in indexed_emojis]
+    indexed_files = [item.get("file") for item in indexed_emojis]
+    _require(len(names) == len(set(names)), "duplicate emoji name in assets index")
+
+    fallback_files = manifest["fallback_emoji"]["files"]
+    custom_images = [
+        item["file"]
+        for item in manifest["extra_files"]
+        if Path(item["file"]).suffix.casefold() in (".png", ".gif")
+    ]
+    expected_files = set(fallback_files) | set(custom_images)
+    _require(set(indexed_files) == expected_files, "emoji index does not match manifest")
+    _require(
+        all(filename in files for filename in expected_files),
+        "manifest emoji is absent from assets.bin",
+    )
 
 
 def validate_capacity(manifest, assets_size):
@@ -166,10 +237,7 @@ def validate_archive(manifest, assets_bin_path):
     _require(font["file"] in files, "text font file is absent from assets.bin")
     _require(index.get("text_font_meta", {}).get("bundle") == font["bundle"], "font bundle does not match")
 
-    expected_emojis = manifest["fallback_emoji"]["files"]
-    indexed_emojis = [item.get("file") for item in index.get("emoji_collection", [])]
-    _require(set(indexed_emojis) == set(expected_emojis), "fallback emoji index does not match")
-    _require(all(filename in files for filename in expected_emojis), "fallback emoji is absent from assets.bin")
+    validate_emoji_index(manifest, index.get("emoji_collection", []), files)
 
     warnings = []
     indexed_extra = set(index.get("extra_files", []))

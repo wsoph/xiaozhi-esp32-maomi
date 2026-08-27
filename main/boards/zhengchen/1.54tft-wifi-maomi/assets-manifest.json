@@ -40,6 +40,138 @@
     },
     "extra_files": [
         {
+            "file": "angry.png",
+            "required": true
+        },
+        {
+            "file": "confident.png",
+            "required": true
+        },
+        {
+            "file": "confused.png",
+            "required": true
+        },
+        {
+            "file": "cool.png",
+            "required": true
+        },
+        {
+            "file": "crying.png",
+            "required": true
+        },
+        {
+            "file": "delicious.png",
+            "required": true
+        },
+        {
+            "file": "embarrassed.png",
+            "required": true
+        },
+        {
+            "file": "funny.png",
+            "required": true
+        },
+        {
+            "file": "happy.png",
+            "required": true
+        },
+        {
+            "file": "kissy.png",
+            "required": true
+        },
+        {
+            "file": "laughing.png",
+            "required": true
+        },
+        {
+            "file": "loving.png",
+            "required": true
+        },
+        {
+            "file": "neutral.png",
+            "required": true
+        },
+        {
+            "file": "relaxed.png",
+            "required": true
+        },
+        {
+            "file": "sad.png",
+            "required": true
+        },
+        {
+            "file": "shocked.png",
+            "required": true
+        },
+        {
+            "file": "silly.png",
+            "required": true
+        },
+        {
+            "file": "sleepy.png",
+            "required": true
+        },
+        {
+            "file": "surprised.png",
+            "required": true
+        },
+        {
+            "file": "thinking.png",
+            "required": true
+        },
+        {
+            "file": "winking.png",
+            "required": true
+        },
+        {
+            "file": "maomi_blink.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_charge.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_eat.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_look.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_low_battery.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_pet.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_play.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_reminder.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_sleep.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_meow_1.ogg",
+            "required": true
+        },
+        {
+            "file": "maomi_meow_2.ogg",
+            "required": true
+        },
+        {
+            "file": "maomi_prompt.ogg",
+            "required": true
+        },
+        {
             "file": "maomi_wake.ogg",
             "required": true
         }

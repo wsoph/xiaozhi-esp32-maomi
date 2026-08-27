@@ -36,6 +36,30 @@ FALLBACK_EMOJIS = [
     "winking.png",
 ]
 
+ANIMATED_EMOJIS = [
+    "maomi_blink.gif",
+    "maomi_charge.gif",
+    "maomi_eat.gif",
+    "maomi_look.gif",
+    "maomi_low_battery.gif",
+    "maomi_pet.gif",
+    "maomi_play.gif",
+    "maomi_reminder.gif",
+    "maomi_sleep.gif",
+]
+
+ANIMATION_FRAME_COUNTS = {
+    "maomi_blink.gif": 3,
+    **{filename: 4 for filename in ANIMATED_EMOJIS if filename != "maomi_blink.gif"},
+}
+
+LOCAL_SOUNDS = [
+    "maomi_meow_1.ogg",
+    "maomi_meow_2.ogg",
+    "maomi_prompt.ogg",
+    "maomi_wake.ogg",
+]
+
 
 def load_validator():
     spec = importlib.util.spec_from_file_location("validate_maomi_assets", VALIDATOR_PATH)
@@ -82,22 +106,49 @@ class MaomiAssetsTest(unittest.TestCase):
         self.assertEqual(manifest["fallback_emoji"]["collection"], "noto-color-emoji_64")
         self.assertEqual(manifest["fallback_emoji"]["files"], FALLBACK_EMOJIS)
         self.assertEqual(len(set(manifest["fallback_emoji"]["files"])), 21)
-        self.assertIn(
-            {"file": "maomi_wake.ogg", "required": True},
-            manifest["extra_files"],
+        expected_extra = FALLBACK_EMOJIS + ANIMATED_EMOJIS + LOCAL_SOUNDS
+        self.assertEqual(
+            [item["file"] for item in manifest["extra_files"]], expected_extra
         )
+        self.assertTrue(all(item["required"] for item in manifest["extra_files"]))
         self.assertEqual(manifest["capacity"]["partition_size_bytes"], 8 * 1024 * 1024)
         self.assertEqual(manifest["capacity"]["minimum_free_percent"], 10)
 
-    def test_local_wake_response_is_24_khz_mono_opus(self):
-        sound = (BOARD / "assets-extra" / "maomi_wake.ogg").read_bytes()
+    def test_custom_emojis_are_128_pixels_with_expected_animation_frames(self):
+        for filename in FALLBACK_EMOJIS:
+            image = (BOARD / "assets-extra" / filename).read_bytes()
+            self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n", filename)
+            self.assertEqual(struct.unpack_from(">II", image, 16), (128, 128), filename)
 
-        self.assertTrue(sound.startswith(b"OggS"))
-        opus_head = sound.find(b"OpusHead")
-        self.assertGreaterEqual(opus_head, 0)
-        self.assertEqual(sound[opus_head + 9], 1)
-        self.assertEqual(struct.unpack_from("<I", sound, opus_head + 12)[0], 24_000)
-        self.assertIn(b"OpusTags", sound)
+        for filename in ANIMATED_EMOJIS:
+            image = (BOARD / "assets-extra" / filename).read_bytes()
+            self.assertIn(image[:6], (b"GIF87a", b"GIF89a"), filename)
+            self.assertEqual(struct.unpack_from("<HH", image, 6), (128, 128), filename)
+            self.assertEqual(
+                image.count(b"\x21\xf9\x04"),
+                ANIMATION_FRAME_COUNTS[filename],
+                filename,
+            )
+
+    def test_local_sounds_are_short_24_khz_mono_opus(self):
+        for filename in LOCAL_SOUNDS:
+            sound = (BOARD / "assets-extra" / filename).read_bytes()
+
+            self.assertTrue(sound.startswith(b"OggS"), filename)
+            opus_head = sound.find(b"OpusHead")
+            self.assertGreaterEqual(opus_head, 0, filename)
+            self.assertEqual(sound[opus_head + 9], 1, filename)
+            self.assertEqual(
+                struct.unpack_from("<I", sound, opus_head + 12)[0], 24_000, filename
+            )
+            self.assertIn(b"OpusTags", sound, filename)
+            granules = [
+                struct.unpack_from("<Q", sound, offset + 6)[0]
+                for offset in range(len(sound) - 14)
+                if sound[offset : offset + 4] == b"OggS"
+            ]
+            self.assertTrue(granules, filename)
+            self.assertLessEqual(max(granules), 2 * 48_000, filename)
 
     def test_board_sources_contain_no_deprecated_name(self):
         deprecated_chinese = "咪" * 2
@@ -130,6 +181,24 @@ class MaomiAssetsTest(unittest.TestCase):
             board_source,
         )
 
+    def test_validator_accepts_overridden_static_and_custom_animated_emojis(self):
+        validator = load_validator()
+        manifest = load_manifest()
+        indexed = [
+            {"name": Path(filename).stem, "file": filename}
+            for filename in FALLBACK_EMOJIS + ANIMATED_EMOJIS
+        ]
+        archive_files = {filename: b"asset" for filename in FALLBACK_EMOJIS + ANIMATED_EMOJIS}
+
+        validator.validate_emoji_index(manifest, indexed, archive_files)
+
+        with self.assertRaisesRegex(
+            validator.AssetValidationError, "duplicate emoji name"
+        ):
+            validator.validate_emoji_index(
+                manifest, indexed + [{"name": "happy", "file": "happy.png"}], archive_files
+            )
+
     def test_source_validation_fails_without_the_wake_model_but_allows_optional_files(self):
         validator = load_validator()
         manifest = load_manifest()
@@ -147,9 +216,11 @@ class MaomiAssetsTest(unittest.TestCase):
             (fonts_root / "cbin").mkdir()
             (model_dir / "mn7_data").write_bytes(b"model")
             (fonts_root / "cbin" / manifest["font"]["file"]).write_bytes(b"font")
-            (extra_root / "maomi_wake.ogg").write_bytes(
-                (BOARD / "assets-extra" / "maomi_wake.ogg").read_bytes()
-            )
+            for item in manifest["extra_files"]:
+                filename = item["file"]
+                (extra_root / filename).write_bytes(
+                    (BOARD / "assets-extra" / filename).read_bytes()
+                )
             for filename in manifest["fallback_emoji"]["files"]:
                 (emoji_dir / filename).write_bytes(b"png")
 
@@ -157,6 +228,15 @@ class MaomiAssetsTest(unittest.TestCase):
                 manifest, model_root.parent, fonts_root, extra_root
             )
             self.assertEqual(warnings, [])
+
+            (extra_root / "angry.png").write_bytes(b"not a png")
+            with self.assertRaisesRegex(validator.AssetValidationError, "invalid PNG"):
+                validator.validate_sources(
+                    manifest, model_root.parent, fonts_root, extra_root
+                )
+            (extra_root / "angry.png").write_bytes(
+                (BOARD / "assets-extra" / "angry.png").read_bytes()
+            )
 
             optional_manifest = copy.deepcopy(manifest)
             optional_manifest["extra_files"] = [
