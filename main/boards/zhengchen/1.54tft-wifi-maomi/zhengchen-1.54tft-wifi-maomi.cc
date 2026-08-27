@@ -45,6 +45,8 @@ constexpr uint8_t kMaomiBatteryWarmupSamples = 4;
 constexpr float kHighTemperatureThresholdCelsius = 75.0f;
 constexpr uint32_t kMaomiAutonomyRandomSeed = 0x4D414F4Du;
 constexpr uint64_t kMaomiInteractionVisibleDurationMs = 4'000;
+constexpr uint64_t kMaomiReminderVisibleDurationMs = 4'000;
+constexpr char kMaomiReminderSoundName[] = "maomi_wake.ogg";
 
 class FirmwareUiAssetCatalog final : public maomi::UiAssetCatalog {
 public:
@@ -100,6 +102,8 @@ private:
     std::optional<maomi::PetAction> maomi_active_interaction_;
     uint64_t maomi_interaction_remaining_ms_ = 0;
     uint64_t maomi_interaction_last_update_ms_ = 0;
+    uint64_t maomi_reminder_remaining_ms_ = 0;
+    uint64_t maomi_reminder_last_update_ms_ = 0;
     std::optional<maomi::PetAction> maomi_pending_interaction_sound_;
     std::string_view last_maomi_display_emotion_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
@@ -413,6 +417,12 @@ private:
         maomi_storage_.FlushIfDue(monotonic_ms);
     }
 
+    maomi::ClockSnapshot ReminderClockAt(uint64_t monotonic_ms) const {
+        auto snapshot = maomi_clock_.GetSnapshot();
+        snapshot.monotonic_ms = monotonic_ms;
+        return snapshot;
+    }
+
     static maomi::PetState PetStateForAction(maomi::PetAction action) {
         switch (action) {
             case maomi::PetAction::kPet:
@@ -486,6 +496,68 @@ private:
         }
     }
 
+    void UpdateMaomiReminderLifetime(uint64_t monotonic_ms, const maomi::Snapshot& pet_snapshot) {
+        if (maomi_reminder_remaining_ms_ == 0) {
+            return;
+        }
+        if (monotonic_ms < maomi_reminder_last_update_ms_) {
+            maomi_reminder_last_update_ms_ = monotonic_ms;
+            return;
+        }
+        const uint64_t elapsed_ms = monotonic_ms - maomi_reminder_last_update_ms_;
+        maomi_reminder_last_update_ms_ = monotonic_ms;
+        if (maomi_high_temperature_ || pet_snapshot.paused_by_official_state ||
+            pet_snapshot.priority != maomi::PetPriority::kReminder) {
+            return;
+        }
+        if (elapsed_ms < maomi_reminder_remaining_ms_) {
+            maomi_reminder_remaining_ms_ -= elapsed_ms;
+            return;
+        }
+
+        maomi_reminder_remaining_ms_ = 0;
+        maomi_pet_core_.ReleaseExpression(maomi::PetPriority::kReminder);
+    }
+
+    void HandleMaomiRemindersOnMainTask(uint64_t monotonic_ms,
+                                        const maomi::Snapshot& pet_snapshot) {
+        if (!maomi_reminders_) {
+            return;
+        }
+        auto& app = Application::GetInstance();
+        auto& audio_service = app.GetAudioService();
+        const bool device_busy = app.GetDeviceState() != kDeviceStateIdle ||
+                                 !audio_service.IsPlaybackIdle() ||
+                                 maomi_local_sound_playback_id_ != 0;
+        const bool low_battery =
+            pet_snapshot.battery_level >= 0 && pet_snapshot.battery_level <= 20;
+        const auto event = maomi_reminders_->Update({
+            .clock = ReminderClockAt(monotonic_ms),
+            .device_busy = device_busy,
+            .low_battery = low_battery,
+        });
+        if (event.state == maomi::ReminderEventState::kNone) {
+            return;
+        }
+
+        const auto presentation = maomi::DecideReminderPresentation(event, maomi_high_temperature_);
+        if (!presentation.show_animation) {
+            return;
+        }
+        const auto submit = maomi_pet_core_.Submit(maomi::Event::ReminderDue());
+        if (submit == maomi::SubmitResult::kRejected) {
+            ESP_LOGW(TAG, "Maomi reminder presentation queue rejected id=%u",
+                     static_cast<unsigned>(event.id));
+            return;
+        }
+        maomi_reminder_remaining_ms_ = kMaomiReminderVisibleDurationMs;
+        maomi_reminder_last_update_ms_ = monotonic_ms;
+        if (presentation.play_sound && !TryPlayMaomiSound(kMaomiReminderSoundName, false)) {
+            ESP_LOGW(TAG, "Maomi reminder sound unavailable id=%u",
+                     static_cast<unsigned>(event.id));
+        }
+    }
+
     void UpdateMaomiAutonomyOnMainTask(maomi::ActivitySource activity) {
         if (!maomi_runtime_ready_) {
             return;
@@ -495,6 +567,8 @@ private:
         const auto pet_snapshot = maomi_pet_core_.GetSnapshot();
         TryPlayPendingInteractionSound(pet_snapshot);
         UpdateMaomiInteractionLifetime(monotonic_ms, pet_snapshot);
+        UpdateMaomiReminderLifetime(monotonic_ms, pet_snapshot);
+        HandleMaomiRemindersOnMainTask(monotonic_ms, pet_snapshot);
         const auto before = maomi_autonomy_.GetSnapshot();
         const maomi::AutonomyInputs inputs = {
             .official_idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle,
@@ -663,14 +737,58 @@ private:
 
     bool InitializeMaomiTools() {
         try {
+            auto& server = McpServer::GetInstance();
             maomi::RegisterPetTools(
-                McpServer::GetInstance(),
+                server,
                 {
                     .interact =
                         [this](maomi::PetAction action) { return HandleMaomiInteraction(action); },
                     .get_status = [this]() { return GetMaomiToolSnapshot(); },
                     .set_quiet = [this](bool enabled) { return SetMaomiQuiet(enabled); },
                 });
+
+            maomi::ReminderToolDependencies reminder_dependencies;
+            if (maomi_reminders_) {
+                reminder_dependencies.start_countdown = [this](uint32_t duration_seconds,
+                                                               std::string_view label) {
+                    const uint64_t monotonic_ms = MonotonicMs();
+                    ObserveMaomiClockOnMainTask(monotonic_ms);
+                    return maomi_reminders_->StartCountdown(duration_seconds, label,
+                                                            ReminderClockAt(monotonic_ms));
+                };
+                reminder_dependencies.set_alarm = [this](const maomi::DateTime& target,
+                                                         std::string_view label) {
+                    const uint64_t monotonic_ms = MonotonicMs();
+                    ObserveMaomiClockOnMainTask(monotonic_ms);
+                    return maomi_reminders_->SetAlarm(target, label, ReminderClockAt(monotonic_ms));
+                };
+                reminder_dependencies.start_interval = [this](maomi::ReminderKind kind,
+                                                              uint32_t interval_minutes,
+                                                              std::string_view label) {
+                    const uint64_t monotonic_ms = MonotonicMs();
+                    ObserveMaomiClockOnMainTask(monotonic_ms);
+                    return maomi_reminders_->StartInterval(kind, interval_minutes, label,
+                                                           ReminderClockAt(monotonic_ms));
+                };
+                reminder_dependencies.start_pomodoro =
+                    [this](uint32_t work_minutes, uint32_t break_minutes, uint32_t cycles) {
+                        const uint64_t monotonic_ms = MonotonicMs();
+                        ObserveMaomiClockOnMainTask(monotonic_ms);
+                        return maomi_reminders_->StartPomodoro(work_minutes, break_minutes, cycles,
+                                                               ReminderClockAt(monotonic_ms));
+                    };
+                reminder_dependencies.cancel = [this](uint16_t id) {
+                    const uint64_t monotonic_ms = MonotonicMs();
+                    ObserveMaomiClockOnMainTask(monotonic_ms);
+                    return maomi_reminders_->Cancel(id, ReminderClockAt(monotonic_ms));
+                };
+                reminder_dependencies.list = [this]() {
+                    const uint64_t monotonic_ms = MonotonicMs();
+                    ObserveMaomiClockOnMainTask(monotonic_ms);
+                    return maomi_reminders_->List(ReminderClockAt(monotonic_ms));
+                };
+            }
+            maomi::RegisterReminderTools(server, std::move(reminder_dependencies));
             return true;
         } catch (const std::exception& error) {
             ESP_LOGE(TAG, "Failed to register Maomi MCP tools: %s", error.what());

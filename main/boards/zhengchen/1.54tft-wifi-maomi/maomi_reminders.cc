@@ -134,6 +134,25 @@ uint32_t BlobChecksum(const uint8_t* data, size_t size) {
 
 ReminderEngine::ReminderEngine(StateStorage& storage) : storage_(storage) {}
 
+ReminderPresentationDecision DecideReminderPresentation(const ReminderEvent& event,
+                                                        bool critical_alert) {
+    switch (event.state) {
+        case ReminderEventState::kTriggered:
+            if (event.id == 0) {
+                return {};
+            }
+            return {
+                .show_animation = true,
+                .play_sound = event.audible && !critical_alert,
+            };
+        case ReminderEventState::kMissed:
+            return {.show_animation = event.id != 0};
+        case ReminderEventState::kNone:
+            return {};
+    }
+    return {};
+}
+
 ReminderResult ReminderEngine::StartCountdown(uint32_t duration_seconds, std::string_view label,
                                               const ClockSnapshot& clock) {
     if (duration_seconds < 1 || duration_seconds > 86400) {

@@ -589,6 +589,48 @@ void TestNightIntervalDoesNotAccumulateAtEight() {
           maomi::ReminderEngine::CivilSeconds({2028, 3, 1, 8, 0, 1}));
 }
 
+void TestAllReminderKindsMapToBoundedLocalPresentation() {
+    constexpr maomi::ReminderKind kinds[] = {
+        maomi::ReminderKind::kCountdown, maomi::ReminderKind::kAlarm,
+        maomi::ReminderKind::kWater,     maomi::ReminderKind::kSedentary,
+        maomi::ReminderKind::kPomodoro,
+    };
+    for (const auto kind : kinds) {
+        const maomi::ReminderEvent event = {
+            .state = maomi::ReminderEventState::kTriggered,
+            .id = 1,
+            .kind = kind,
+            .audible = true,
+        };
+        const auto decision = maomi::DecideReminderPresentation(event, false);
+        CHECK(decision.show_animation);
+        CHECK(decision.play_sound);
+    }
+
+    const maomi::ReminderEvent quiet = {
+        .state = maomi::ReminderEventState::kTriggered,
+        .id = 2,
+        .kind = maomi::ReminderKind::kWater,
+        .audible = false,
+    };
+    CHECK(maomi::DecideReminderPresentation(quiet, false).show_animation);
+    CHECK(!maomi::DecideReminderPresentation(quiet, false).play_sound);
+
+    const maomi::ReminderEvent missed = {
+        .state = maomi::ReminderEventState::kMissed,
+        .id = 3,
+        .kind = maomi::ReminderKind::kAlarm,
+        .audible = true,
+    };
+    CHECK(maomi::DecideReminderPresentation(missed, false).show_animation);
+    CHECK(!maomi::DecideReminderPresentation(missed, false).play_sound);
+    CHECK(!maomi::DecideReminderPresentation({}, false).show_animation);
+    CHECK(!maomi::DecideReminderPresentation(quiet, true).play_sound);
+    auto invalid = quiet;
+    invalid.state = static_cast<maomi::ReminderEventState>(255);
+    CHECK(!maomi::DecideReminderPresentation(invalid, false).show_animation);
+}
+
 }  // namespace
 
 int main() {
@@ -609,6 +651,7 @@ int main() {
     TestHeaderCorruptionRecoversSafely();
     TestExtremeWallTimeRecoversSafely();
     TestNonCanonicalPersistentFieldsRecoverSafely();
+    TestAllReminderKindsMapToBoundedLocalPresentation();
     std::cout << "maomi reminder clock tests passed" << std::endl;
     return 0;
 }

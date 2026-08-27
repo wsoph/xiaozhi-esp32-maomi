@@ -101,6 +101,16 @@ struct ReminderEvent {
     bool persistence_pending = false;
 };
 
+struct ReminderPresentationDecision {
+    bool show_animation = false;
+    bool play_sound = false;
+};
+
+// Converts a scheduler event into bounded local output. Critical system alerts suppress sound;
+// missed and quiet-hour events remain visible without becoming audible.
+ReminderPresentationDecision DecideReminderPresentation(const ReminderEvent& event,
+                                                        bool critical_alert);
+
 // Main-task-owned, fixed-capacity reminder scheduler. External callbacks must schedule all
 // mutations onto the application main task before calling this class.
 class ReminderEngine {

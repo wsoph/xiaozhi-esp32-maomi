@@ -37,6 +37,7 @@ MCP_SERVER_STUB = r"""
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -59,9 +60,21 @@ public:
     Property(const std::string& name, PropertyType type, const T& default_value)
         : name_(name), type_(type), value_(default_value), required_(false) {}
 
+    Property(const std::string& name, PropertyType type, int min_value, int max_value)
+        : name_(name), type_(type), required_(true), has_range_(true),
+          min_value_(min_value), max_value_(max_value) {}
+
+    Property(const std::string& name, PropertyType type, int default_value, int min_value,
+             int max_value)
+        : name_(name), type_(type), value_(default_value), required_(false), has_range_(true),
+          min_value_(min_value), max_value_(max_value) {}
+
     const std::string& name() const { return name_; }
     PropertyType type() const { return type_; }
     bool has_default_value() const { return !required_; }
+    bool has_range() const { return has_range_; }
+    int min_value() const { return min_value_; }
+    int max_value() const { return max_value_; }
 
     template <typename T>
     T value() const {
@@ -70,6 +83,11 @@ public:
 
     template <typename T>
     void set_value(const T& value) {
+        if constexpr (std::is_same_v<T, int>) {
+            if (has_range_ && (value < min_value_ || value > max_value_)) {
+                throw std::invalid_argument("Integer argument is outside its allowed range");
+            }
+        }
         value_ = value;
     }
 
@@ -78,6 +96,9 @@ private:
     PropertyType type_;
     std::variant<bool, int, std::string> value_ = false;
     bool required_ = true;
+    bool has_range_ = false;
+    int min_value_ = 0;
+    int max_value_ = 0;
 };
 
 class PropertyList {
@@ -179,13 +200,19 @@ CONTRACT_TEST = r"""
 
 namespace {
 
+int error_expectation = 0;
+
 template <typename Callback>
 void ExpectError(Callback callback) {
+    ++error_expectation;
     bool failed = false;
     try {
         callback();
     } catch (const std::exception&) {
         failed = true;
+    }
+    if (!failed) {
+        std::cerr << "Expected error was not raised at check " << error_expectation << std::endl;
     }
     assert(failed);
 }
@@ -200,11 +227,17 @@ const McpServer::Tool& FindTool(const McpServer& server, std::string_view name) 
 }
 
 void AssertSchema(const McpServer& server) {
-    assert(server.tools.size() == 3);
-    std::array<std::string, 3> names = {
+    assert(server.tools.size() == 9);
+    std::array<std::string, 9> names = {
         server.tools[0].name,
         server.tools[1].name,
         server.tools[2].name,
+        server.tools[3].name,
+        server.tools[4].name,
+        server.tools[5].name,
+        server.tools[6].name,
+        server.tools[7].name,
+        server.tools[8].name,
     };
     std::sort(names.begin(), names.end());
     assert(std::adjacent_find(names.begin(), names.end()) == names.end());
@@ -240,6 +273,110 @@ void AssertSchema(const McpServer& server) {
         assert(!property.has_default_value());
     }
     assert(quiet_fields == 1);
+
+    const auto& countdown = FindTool(server, maomi::kCountdownToolName);
+    const auto& alarm = FindTool(server, maomi::kAlarmToolName);
+    const auto& interval = FindTool(server, maomi::kIntervalReminderToolName);
+    const auto& pomodoro = FindTool(server, maomi::kPomodoroToolName);
+    const auto& list = FindTool(server, maomi::kReminderListToolName);
+    const auto& cancel = FindTool(server, maomi::kReminderCancelToolName);
+    assert(!countdown.description.empty());
+    assert(!alarm.description.empty());
+    assert(!interval.description.empty());
+    assert(!pomodoro.description.empty());
+    assert(!list.description.empty());
+    assert(!cancel.description.empty());
+
+    const auto assert_integer = [](const Property& property, std::string_view name, int minimum,
+                                   int maximum) {
+        assert(property.name() == name);
+        assert(property.type() == kPropertyTypeInteger);
+        assert(property.has_range());
+        assert(property.min_value() == minimum);
+        assert(property.max_value() == maximum);
+    };
+
+    size_t countdown_fields = 0;
+    for (const auto& property : countdown.properties) {
+        if (countdown_fields == 0) {
+            assert_integer(property, "duration_seconds", 1, 86400);
+            assert(!property.has_default_value());
+        } else {
+            assert(property.name() == "label");
+            assert(property.type() == kPropertyTypeString);
+            assert(property.has_default_value());
+        }
+        ++countdown_fields;
+    }
+    assert(countdown_fields == 2);
+
+    size_t alarm_fields = 0;
+    for (const auto& property : alarm.properties) {
+        if (alarm_fields == 0) {
+            assert(property.name() == "date");
+            assert(property.type() == kPropertyTypeString);
+            assert(!property.has_default_value());
+        } else if (alarm_fields == 1) {
+            assert_integer(property, "hour", 0, 23);
+            assert(!property.has_default_value());
+        } else if (alarm_fields == 2) {
+            assert_integer(property, "minute", 0, 59);
+            assert(!property.has_default_value());
+        } else {
+            assert(property.name() == "label");
+            assert(property.type() == kPropertyTypeString);
+            assert(property.has_default_value());
+        }
+        ++alarm_fields;
+    }
+    assert(alarm_fields == 4);
+
+    size_t interval_fields = 0;
+    for (const auto& property : interval.properties) {
+        if (interval_fields == 0) {
+            assert(property.name() == "kind");
+            assert(property.type() == kPropertyTypeString);
+            assert(!property.has_default_value());
+        } else if (interval_fields == 1) {
+            assert_integer(property, "interval_minutes", 10, 720);
+            assert(!property.has_default_value());
+        } else {
+            assert(property.name() == "label");
+            assert(property.type() == kPropertyTypeString);
+            assert(property.has_default_value());
+        }
+        ++interval_fields;
+    }
+    assert(interval_fields == 3);
+
+    size_t pomodoro_fields = 0;
+    for (const auto& property : pomodoro.properties) {
+        if (pomodoro_fields == 0) {
+            assert_integer(property, "work_minutes", 1, 120);
+        } else if (pomodoro_fields == 1) {
+            assert_integer(property, "break_minutes", 1, 60);
+        } else {
+            assert_integer(property, "cycles", 1, 12);
+        }
+        assert(!property.has_default_value());
+        ++pomodoro_fields;
+    }
+    assert(pomodoro_fields == 3);
+
+    size_t list_fields = 0;
+    for (const auto& property : list.properties) {
+        static_cast<void>(property);
+        ++list_fields;
+    }
+    assert(list_fields == 0);
+
+    size_t cancel_fields = 0;
+    for (const auto& property : cancel.properties) {
+        assert_integer(property, "id", 1, 65535);
+        assert(!property.has_default_value());
+        ++cancel_fields;
+    }
+    assert(cancel_fields == 1);
 }
 
 }  // namespace
@@ -285,7 +422,88 @@ int main() {
         return result;
     };
 
+    maomi::ReminderList reminders;
+    uint16_t next_reminder_id = 1;
+    std::atomic<int> reminder_mutations{0};
+    const auto add_reminder = [&reminders, &next_reminder_id, &reminder_mutations](
+                                  maomi::ReminderKind kind, bool persistent,
+                                  std::string_view label) {
+        assert(reminders.count < reminders.items.size());
+        auto& snapshot = reminders.items[reminders.count++];
+        snapshot.id = next_reminder_id++;
+        snapshot.kind = kind;
+        snapshot.persistent = persistent;
+        std::copy(label.begin(), label.end(), snapshot.label.begin());
+        snapshot.label[label.size()] = '\0';
+        ++reminder_mutations;
+        return maomi::ReminderResult{
+            .status = maomi::ReminderStatus::kAccepted,
+            .id = snapshot.id,
+            .kind = kind,
+            .persistent = persistent,
+        };
+    };
+
+    maomi::ReminderToolDependencies reminder_dependencies;
+    reminder_dependencies.start_countdown =
+        [&add_reminder, &reminders](uint32_t duration_seconds, std::string_view label) {
+            auto result = add_reminder(maomi::ReminderKind::kCountdown, false, label);
+            reminders.items[reminders.count - 1].remaining_ms = duration_seconds * 1000ULL;
+            return result;
+        };
+    reminder_dependencies.set_alarm =
+        [&add_reminder, &reminders](const maomi::DateTime& target, std::string_view label) {
+            assert(target.second == 0);
+            auto result = add_reminder(maomi::ReminderKind::kAlarm, true, label);
+            reminders.items[reminders.count - 1].next_wall_time_seconds =
+                1800000000 + target.hour * 3600 + target.minute * 60;
+            return result;
+        };
+    reminder_dependencies.start_interval =
+        [&add_reminder, &reminders](maomi::ReminderKind kind, uint32_t interval_minutes,
+                                    std::string_view label) {
+            auto result = add_reminder(kind, true, label);
+            auto& snapshot = reminders.items[reminders.count - 1];
+            snapshot.interval_seconds = interval_minutes * 60;
+            snapshot.next_wall_time_seconds = 1800000000 + snapshot.interval_seconds;
+            return result;
+        };
+    reminder_dependencies.start_pomodoro =
+        [&add_reminder, &reminders](uint32_t work_minutes, uint32_t break_minutes,
+                                    uint32_t cycles) {
+            assert(break_minutes >= 1);
+            auto result = add_reminder(maomi::ReminderKind::kPomodoro, false, {});
+            auto& snapshot = reminders.items[reminders.count - 1];
+            snapshot.phase = maomi::ReminderPhase::kWork;
+            snapshot.remaining_ms = work_minutes * 60 * 1000ULL;
+            snapshot.total_cycles = static_cast<uint8_t>(cycles);
+            return result;
+        };
+    reminder_dependencies.cancel =
+        [&reminders, &reminder_mutations](uint16_t id) -> maomi::ReminderResult {
+        for (size_t index = 0; index < reminders.count; ++index) {
+            if (reminders.items[index].id != id) {
+                continue;
+            }
+            const auto removed = reminders.items[index];
+            for (size_t move = index + 1; move < reminders.count; ++move) {
+                reminders.items[move - 1] = reminders.items[move];
+            }
+            reminders.items[--reminders.count] = {};
+            ++reminder_mutations;
+            return {
+                .status = maomi::ReminderStatus::kCancelled,
+                .id = id,
+                .kind = removed.kind,
+                .persistent = removed.persistent,
+            };
+        }
+        return {.status = maomi::ReminderStatus::kNotFound};
+    };
+    reminder_dependencies.list = [&reminders]() { return reminders; };
+
     maomi::RegisterPetTools(server, std::move(dependencies));
+    maomi::RegisterReminderTools(server, std::move(reminder_dependencies));
     AssertSchema(server);
 
     const auto pet = server.Invoke(maomi::kPetInteractToolName, {{"action", std::string("pet")}});
@@ -330,6 +548,92 @@ int main() {
     });
     assert(quiet_updates == 1);
 
+    const auto countdown = server.Invoke(
+        maomi::kCountdownToolName,
+        {{"duration_seconds", 1}, {"label", std::string("desk \\\"A\\\"\\\\")}});
+    assert(countdown.find("\"type\":\"countdown\"") != std::string::npos);
+    assert(countdown.find("\"persistent\":false") != std::string::npos);
+    assert(countdown.find("\"remaining_seconds\":1") != std::string::npos);
+    assert(countdown.find("desk \\\\\\\"A\\\\\\\"\\\\\\\\") != std::string::npos);
+
+    const auto alarm = server.Invoke(maomi::kAlarmToolName,
+                                     {{"date", std::string("2028-02-29")},
+                                      {"hour", 23},
+                                      {"minute", 59}});
+    assert(alarm.find("\"type\":\"alarm\"") != std::string::npos);
+    assert(alarm.find("\"persistent\":true") != std::string::npos);
+    assert(alarm.find("\"next_wall_time_seconds\":") != std::string::npos);
+
+    const auto water = server.Invoke(maomi::kIntervalReminderToolName,
+                                     {{"kind", std::string("water")},
+                                      {"interval_minutes", 10},
+                                      {"label", std::string("water")}});
+    const auto sedentary = server.Invoke(maomi::kIntervalReminderToolName,
+                                         {{"kind", std::string("sedentary")},
+                                          {"interval_minutes", 720}});
+    assert(water.find("\"type\":\"water\"") != std::string::npos);
+    assert(sedentary.find("\"type\":\"sedentary\"") != std::string::npos);
+
+    const auto pomodoro = server.Invoke(maomi::kPomodoroToolName,
+                                        {{"work_minutes", 25},
+                                         {"break_minutes", 5},
+                                         {"cycles", 4}});
+    assert(pomodoro.find("\"type\":\"pomodoro\"") != std::string::npos);
+    assert(pomodoro.find("\"phase\":\"work\"") != std::string::npos);
+    assert(pomodoro.find("\"total_cycles\":4") != std::string::npos);
+
+    const auto reminder_list = server.Invoke(maomi::kReminderListToolName);
+    assert(reminder_list.find("\"count\":5") != std::string::npos);
+    assert(reminder_list.find("\"reminders\":[") != std::string::npos);
+    const auto cancelled =
+        server.Invoke(maomi::kReminderCancelToolName, {{"id", 1}});
+    assert(cancelled.find("\"status\":\"cancelled\"") != std::string::npos);
+    assert(cancelled.find("\"id\":1") != std::string::npos);
+    assert(reminder_mutations == 6);
+
+    ExpectError([&server]() {
+        server.Invoke(maomi::kCountdownToolName, {{"duration_seconds", 0}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kCountdownToolName,
+                      {{"duration_seconds", 1}, {"label", std::string(33, 'x')}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kCountdownToolName,
+                      {{"duration_seconds", 1}, {"label", std::string("bad\nlabel")}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kCountdownToolName,
+                      {{"duration_seconds", 1}, {"label", std::string("\xC3", 1)}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kAlarmToolName,
+                      {{"date", std::string("2027-02-29")}, {"hour", 12}, {"minute", 0}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kAlarmToolName,
+                      {{"date", std::string("2028/02/29")}, {"hour", 12}, {"minute", 0}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kAlarmToolName,
+                      {{"date", std::string("2028-02-29")}, {"hour", 24}, {"minute", 0}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kIntervalReminderToolName,
+                      {{"kind", std::string("walk")}, {"interval_minutes", 30}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kPomodoroToolName,
+                      {{"work_minutes", 25}, {"break_minutes", 0}, {"cycles", 4}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kReminderCancelToolName, {{"id", 65536}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kReminderCancelToolName, {{"id", 65535}});
+    });
+    assert(reminder_mutations == 6);
+
     constexpr int kThreadCount = 4;
     constexpr int kCallsPerThread = 250;
     std::vector<std::thread> callers;
@@ -349,6 +653,7 @@ int main() {
 
     McpServer unavailable_server;
     maomi::RegisterPetTools(unavailable_server, {});
+    maomi::RegisterReminderTools(unavailable_server, {});
     ExpectError([&unavailable_server]() {
         unavailable_server.Invoke(maomi::kPetInteractToolName,
                                   {{"action", std::string("pet")}});
@@ -358,6 +663,32 @@ int main() {
     });
     ExpectError([&unavailable_server]() {
         unavailable_server.Invoke(maomi::kPetQuietToolName, {{"enabled", true}});
+    });
+    ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kCountdownToolName, {{"duration_seconds", 60}});
+    });
+    ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kAlarmToolName,
+                                  {{"date", std::string("2028-02-29")},
+                                   {"hour", 12},
+                                   {"minute", 0}});
+    });
+    ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kIntervalReminderToolName,
+                                  {{"kind", std::string("water")},
+                                   {"interval_minutes", 30}});
+    });
+    ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kPomodoroToolName,
+                                  {{"work_minutes", 25},
+                                   {"break_minutes", 5},
+                                   {"cycles", 4}});
+    });
+    ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kReminderListToolName);
+    });
+    ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kReminderCancelToolName, {{"id", 1}});
     });
 
     std::cout << "maomi MCP tool contract tests passed" << std::endl;
@@ -426,6 +757,29 @@ class MaomiToolsContractTest(unittest.TestCase):
                 env=environment,
             )
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_board_connects_reminder_tools_and_due_presentation(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("RegisterReminderTools(", board_source)
+        for operation in (
+            "StartCountdown(",
+            "SetAlarm(",
+            "StartInterval(",
+            "StartPomodoro(",
+            "Cancel(",
+            "List(",
+        ):
+            self.assertIn(f"maomi_reminders_->{operation}", board_source)
+
+        self.assertIn("maomi_reminders_->Update(", board_source)
+        self.assertIn("Event::ReminderDue()", board_source)
+        self.assertIn("kMaomiReminderSoundName", board_source)
+        self.assertIn(
+            "ReleaseExpression(maomi::PetPriority::kReminder)", board_source
+        )
 
 
 if __name__ == "__main__":

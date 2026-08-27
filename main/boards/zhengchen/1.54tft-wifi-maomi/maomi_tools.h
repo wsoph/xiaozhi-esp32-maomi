@@ -2,9 +2,11 @@
 
 #include "maomi_bond.h"
 #include "maomi_pet_core.h"
+#include "maomi_reminders.h"
 
 #include <cstdint>
 #include <functional>
+#include <string_view>
 
 class McpServer;
 
@@ -13,6 +15,12 @@ namespace maomi {
 inline constexpr char kPetInteractToolName[] = "self.pet.interact";
 inline constexpr char kPetStatusToolName[] = "self.pet.get_status";
 inline constexpr char kPetQuietToolName[] = "self.pet.set_quiet";
+inline constexpr char kCountdownToolName[] = "self.timer.start_countdown";
+inline constexpr char kAlarmToolName[] = "self.alarm.set";
+inline constexpr char kIntervalReminderToolName[] = "self.reminder.start_interval";
+inline constexpr char kPomodoroToolName[] = "self.pomodoro.start";
+inline constexpr char kReminderListToolName[] = "self.reminder.list";
+inline constexpr char kReminderCancelToolName[] = "self.reminder.cancel";
 
 enum class PetAction : uint8_t {
     kPet,
@@ -59,8 +67,21 @@ struct PetToolDependencies {
     std::function<QuietToolResult(bool)> set_quiet;
 };
 
+struct ReminderToolDependencies {
+    std::function<ReminderResult(uint32_t, std::string_view)> start_countdown;
+    std::function<ReminderResult(const DateTime&, std::string_view)> set_alarm;
+    std::function<ReminderResult(ReminderKind, uint32_t, std::string_view)> start_interval;
+    std::function<ReminderResult(uint32_t, uint32_t, uint32_t)> start_pomodoro;
+    std::function<ReminderResult(uint16_t)> cancel;
+    std::function<ReminderList()> list;
+};
+
 // McpServer validates required field types and schedules callbacks onto the application main task.
 // These callbacks add the action whitelist and reject unavailable or inconsistent board results.
 void RegisterPetTools(McpServer& server, PetToolDependencies dependencies);
+
+// Registers local reminder operations. McpServer runs callbacks on the application main task;
+// every dependency must report the engine's real result instead of optimistic success.
+void RegisterReminderTools(McpServer& server, ReminderToolDependencies dependencies);
 
 }  // namespace maomi
