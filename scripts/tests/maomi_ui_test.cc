@@ -49,9 +49,11 @@ struct ExpectedMapping {
 constexpr std::array<ExpectedMapping, maomi::kPetUiStateCount> kExpectedMappings = {{
     {maomi::PetState::kIdle, "neutral.png", "neutral", "neutral", false, 1},
     {maomi::PetState::kCurious, "maomi_look.gif", "maomi_look", "thinking", true, 4},
+    {maomi::PetState::kBlinking, "maomi_blink.gif", "maomi_blink", "winking", true, 3},
     {maomi::PetState::kSleepy, "sleepy.png", "sleepy", "sleepy", false, 1},
     {maomi::PetState::kSleeping, "maomi_sleep.gif", "maomi_sleep", "sleepy", true, 4},
     {maomi::PetState::kHappy, "happy.png", "happy", "happy", false, 1},
+    {maomi::PetState::kBeingPetted, "maomi_pet.gif", "maomi_pet", "loving", true, 4},
     {maomi::PetState::kEating, "maomi_eat.gif", "maomi_eat", "delicious", true, 4},
     {maomi::PetState::kPlaying, "maomi_play.gif", "maomi_play", "funny", true, 4},
     {maomi::PetState::kCharging, "maomi_charge.gif", "maomi_charge", "relaxed", true, 4},

@@ -781,6 +781,24 @@ class MaomiToolsContractTest(unittest.TestCase):
             "ReleaseExpression(maomi::PetPriority::kReminder)", board_source
         )
 
+    def test_board_routes_blink_and_pet_to_their_dedicated_presentations(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        self.assertRegex(
+            board_source,
+            r"case maomi::PetAction::kPet:\s+return maomi::PetState::kBeingPetted;",
+        )
+        self.assertRegex(
+            board_source,
+            r"case maomi::AutonomyAction::kBlink:\s+return maomi::PetState::kBlinking;",
+        )
+        self.assertRegex(
+            board_source,
+            r"case maomi::AutonomyAction::kLookAround:\s+return maomi::PetState::kCurious;",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

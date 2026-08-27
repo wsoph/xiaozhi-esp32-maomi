@@ -81,9 +81,11 @@ void TestStateAndPriorityTable() {
     };
     const Case cases[] = {
         {PetState::kCurious, PetPriority::kAutonomous},
+        {PetState::kBlinking, PetPriority::kAutonomous},
         {PetState::kSleepy, PetPriority::kAutonomous},
         {PetState::kSleeping, PetPriority::kAutonomous},
         {PetState::kHappy, PetPriority::kInteraction},
+        {PetState::kBeingPetted, PetPriority::kInteraction},
         {PetState::kEating, PetPriority::kInteraction},
         {PetState::kPlaying, PetPriority::kInteraction},
         {PetState::kCharging, PetPriority::kPower},
@@ -170,7 +172,8 @@ void TestActualEventMappingsAndPowerOrdering() {
     scheduler.Drain();
     CHECK(core.GetSnapshot().state == PetState::kHappy);
 
-    const PetState interactions[] = {PetState::kHappy, PetState::kEating, PetState::kPlaying};
+    const PetState interactions[] = {PetState::kBeingPetted, PetState::kHappy,
+                                     PetState::kEating, PetState::kPlaying};
     for (const auto state : interactions) {
         CHECK(core.Submit(Event::Interaction(state)) == SubmitResult::kQueued);
         scheduler.Drain();

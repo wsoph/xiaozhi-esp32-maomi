@@ -8,7 +8,7 @@
 
 namespace maomi {
 
-constexpr size_t kPetUiStateCount = 11;
+constexpr size_t kPetUiStateCount = 13;
 constexpr uint8_t kMaxUiAnimationFrames = 4;
 constexpr uint8_t kUiFrameCacheLimit = 2;
 constexpr uint8_t kMaximumUiAnimationFps = 10;

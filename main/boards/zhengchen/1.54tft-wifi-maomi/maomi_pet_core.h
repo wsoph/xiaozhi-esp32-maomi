@@ -16,9 +16,11 @@ constexpr size_t kObserverCapacity = 8;
 enum class PetState : uint8_t {
     kIdle,
     kCurious,
+    kBlinking,
     kSleepy,
     kSleeping,
     kHappy,
+    kBeingPetted,
     kEating,
     kPlaying,
     kCharging,
@@ -106,7 +108,7 @@ struct Snapshot {
 /*
  * Deterministic state/event table:
  * - wake -> curious; conversation finished -> happy;
- * - interaction -> happy/eating/playing;
+ * - interaction -> being_petted/happy/eating/playing;
  * - charging/battery -> charging/full/low_battery;
  * - reminder -> reminding; tick/time-valid only update metadata;
  * - every official non-idle state pauses pet output and official idle restores only

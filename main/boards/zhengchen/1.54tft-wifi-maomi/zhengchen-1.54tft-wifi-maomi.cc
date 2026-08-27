@@ -185,7 +185,8 @@ private:
         }
         const auto action = *maomi_pending_interaction_sound_;
         const bool state_matches =
-            (action == maomi::PetAction::kPet && snapshot.state == maomi::PetState::kHappy) ||
+            (action == maomi::PetAction::kPet &&
+             snapshot.state == maomi::PetState::kBeingPetted) ||
             (action == maomi::PetAction::kFeed && snapshot.state == maomi::PetState::kEating) ||
             (action == maomi::PetAction::kPlay && snapshot.state == maomi::PetState::kPlaying);
         if (!state_matches) {
@@ -426,7 +427,7 @@ private:
     static maomi::PetState PetStateForAction(maomi::PetAction action) {
         switch (action) {
             case maomi::PetAction::kPet:
-                return maomi::PetState::kHappy;
+                return maomi::PetState::kBeingPetted;
             case maomi::PetAction::kFeed:
                 return maomi::PetState::kEating;
             case maomi::PetAction::kPlay:
@@ -450,6 +451,7 @@ private:
     static maomi::PetState PetStateForAutonomyAction(maomi::AutonomyAction action) {
         switch (action) {
             case maomi::AutonomyAction::kBlink:
+                return maomi::PetState::kBlinking;
             case maomi::AutonomyAction::kLookAround:
                 return maomi::PetState::kCurious;
             case maomi::AutonomyAction::kBecomeSleepy:

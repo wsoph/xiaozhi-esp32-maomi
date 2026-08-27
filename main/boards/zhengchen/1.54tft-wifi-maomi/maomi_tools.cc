@@ -71,12 +71,16 @@ const char* MoodText(PetState mood) {
             return "idle";
         case PetState::kCurious:
             return "curious";
+        case PetState::kBlinking:
+            return "blinking";
         case PetState::kSleepy:
             return "sleepy";
         case PetState::kSleeping:
             return "sleeping";
         case PetState::kHappy:
             return "happy";
+        case PetState::kBeingPetted:
+            return "being_petted";
         case PetState::kEating:
             return "eating";
         case PetState::kPlaying:

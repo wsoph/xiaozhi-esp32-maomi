@@ -243,10 +243,11 @@ bool PetCore::IsValidExpression(PetState state, PetPriority priority) {
                    state == PetState::kLowBattery;
         case PetPriority::kInteraction:
             return state == PetState::kCurious || state == PetState::kHappy ||
-                   state == PetState::kEating || state == PetState::kPlaying;
+                   state == PetState::kBeingPetted || state == PetState::kEating ||
+                   state == PetState::kPlaying;
         case PetPriority::kAutonomous:
-            return state == PetState::kCurious || state == PetState::kSleepy ||
-                   state == PetState::kSleeping;
+            return state == PetState::kCurious || state == PetState::kBlinking ||
+                   state == PetState::kSleepy || state == PetState::kSleeping;
         default:
             return false;
     }
@@ -278,8 +279,8 @@ bool PetCore::IsValidEvent(const Event& event) {
     }
     switch (event.type) {
         case EventType::kInteraction:
-            return event.state == PetState::kHappy || event.state == PetState::kEating ||
-                   event.state == PetState::kPlaying;
+            return event.state == PetState::kBeingPetted || event.state == PetState::kHappy ||
+                   event.state == PetState::kEating || event.state == PetState::kPlaying;
         case EventType::kBatteryChanged:
             return event.value >= 0 && event.value <= 100;
         case EventType::kOfficialStateChanged:

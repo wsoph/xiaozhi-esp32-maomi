@@ -19,9 +19,11 @@ struct StateResource {
 constexpr std::array<StateResource, kPetUiStateCount> kStateResources = {{
     {PetState::kIdle, "neutral.png", "neutral", "neutral", false, 1, 1000},
     {PetState::kCurious, "maomi_look.gif", "maomi_look", "thinking", true, 4, 420},
+    {PetState::kBlinking, "maomi_blink.gif", "maomi_blink", "winking", true, 3, 140},
     {PetState::kSleepy, "sleepy.png", "sleepy", "sleepy", false, 1, 1000},
     {PetState::kSleeping, "maomi_sleep.gif", "maomi_sleep", "sleepy", true, 4, 700},
     {PetState::kHappy, "happy.png", "happy", "happy", false, 1, 1000},
+    {PetState::kBeingPetted, "maomi_pet.gif", "maomi_pet", "loving", true, 4, 300},
     {PetState::kEating, "maomi_eat.gif", "maomi_eat", "delicious", true, 4, 260},
     {PetState::kPlaying, "maomi_play.gif", "maomi_play", "funny", true, 4, 300},
     {PetState::kCharging, "maomi_charge.gif", "maomi_charge", "relaxed", true, 4, 420},
