@@ -799,6 +799,19 @@ class MaomiToolsContractTest(unittest.TestCase):
             r"case maomi::AutonomyAction::kLookAround:\s+return maomi::PetState::kCurious;",
         )
 
+    def test_board_uses_one_owner_approved_meow_for_all_cat_actions(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('return "maomi_meow.ogg";', board_source)
+        self.assertIn(
+            'TryPlayMaomiSound("maomi_meow.ogg", true);', board_source
+        )
+        self.assertNotIn("maomi_meow_1.ogg", board_source)
+        self.assertNotIn("maomi_meow_2.ogg", board_source)
+        self.assertNotIn("maomi_next_meow_sound_", board_source)
+
 
 if __name__ == "__main__":
     unittest.main()

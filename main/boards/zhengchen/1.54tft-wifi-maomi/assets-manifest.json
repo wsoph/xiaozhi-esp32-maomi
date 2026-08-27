@@ -160,11 +160,7 @@
             "required": true
         },
         {
-            "file": "maomi_meow_1.ogg",
-            "required": true
-        },
-        {
-            "file": "maomi_meow_2.ogg",
+            "file": "maomi_meow.ogg",
             "required": true
         },
         {

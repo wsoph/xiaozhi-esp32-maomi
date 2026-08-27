@@ -98,7 +98,6 @@ private:
     bool last_maomi_time_valid_ = false;
     uint64_t maomi_last_clock_observe_second_ = UINT64_MAX;
     bool maomi_autonomy_sound_playing_ = false;
-    uint8_t maomi_next_meow_sound_ = 0;
     std::optional<maomi::PetAction> maomi_active_interaction_;
     uint64_t maomi_interaction_remaining_ms_ = 0;
     uint64_t maomi_interaction_last_update_ms_ = 0;
@@ -169,11 +168,9 @@ private:
     static const char* InteractionSoundName(maomi::PetAction action) {
         switch (action) {
             case maomi::PetAction::kPet:
-                return "maomi_meow_1.ogg";
             case maomi::PetAction::kFeed:
-                return "maomi_meow_2.ogg";
             case maomi::PetAction::kPlay:
-                return "maomi_meow_1.ogg";
+                return "maomi_meow.ogg";
         }
         return nullptr;
     }
@@ -492,9 +489,7 @@ private:
             maomi_autonomy_sound_playing_ = false;
         }
         if (decision.started_sound == maomi::AutonomySound::kPlayLocalMeow) {
-            const char* filename =
-                maomi_next_meow_sound_++ % 2 == 0 ? "maomi_meow_1.ogg" : "maomi_meow_2.ogg";
-            TryPlayMaomiSound(filename, true);
+            TryPlayMaomiSound("maomi_meow.ogg", true);
         }
     }
 

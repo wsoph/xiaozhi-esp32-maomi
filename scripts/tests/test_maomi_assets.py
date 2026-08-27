@@ -54,8 +54,7 @@ ANIMATION_FRAME_COUNTS = {
 }
 
 LOCAL_SOUNDS = [
-    "maomi_meow_1.ogg",
-    "maomi_meow_2.ogg",
+    "maomi_meow.ogg",
     "maomi_prompt.ogg",
     "maomi_wake.ogg",
 ]
