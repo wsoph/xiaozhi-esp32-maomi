@@ -11,6 +11,7 @@
 #include "maomi_bond.h"
 #include "maomi_clock.h"
 #include "maomi_pet_core.h"
+#include "maomi_reminders.h"
 #include "maomi_storage.h"
 #include "maomi_tools.h"
 #include "maomi_ui.h"
@@ -74,6 +75,7 @@ private:
     maomi::StateStorage maomi_storage_;
     maomi::ReliableClock maomi_clock_;
     std::unique_ptr<maomi::BondTracker> maomi_bond_;
+    std::unique_ptr<maomi::ReminderEngine> maomi_reminders_;
     maomi::AutonomyController maomi_autonomy_{kMaomiAutonomyRandomSeed};
     maomi::UiMapper maomi_ui_mapper_;
     maomi::PowerUiPolicy maomi_power_ui_policy_;
@@ -601,7 +603,9 @@ private:
             .battery_level = pet.battery_level,
             .charging = pet.charging,
             .manual_quiet = maomi_storage_.GetState().manual_quiet,
-            .active_reminders = 0,
+            .active_reminders = maomi_reminders_ == nullptr
+                                    ? uint8_t{0}
+                                    : static_cast<uint8_t>(maomi_reminders_->ActiveCount()),
         };
     }
 
@@ -634,6 +638,27 @@ private:
         }
         ObserveMaomiClockOnMainTask(MonotonicMs());
         return true;
+    }
+
+    bool InitializeMaomiReminders() {
+        try {
+            auto reminders = std::make_unique<maomi::ReminderEngine>(maomi_storage_);
+            const auto restored = reminders->Restore(maomi_clock_.GetSnapshot());
+            if (restored.status == maomi::RestoreStatus::kUnavailable) {
+                ESP_LOGE(TAG, "Maomi reminders unavailable because saved state is read-only");
+                return false;
+            }
+            if (restored.status == maomi::RestoreStatus::kRecovered) {
+                ESP_LOGW(TAG, "Recovered invalid Maomi reminder data with safe defaults");
+            }
+            ESP_LOGI(TAG, "Maomi reminders restored: %u",
+                     static_cast<unsigned>(restored.restored_count));
+            maomi_reminders_ = std::move(reminders);
+            return true;
+        } catch (const std::bad_alloc&) {
+            ESP_LOGE(TAG, "Failed to allocate Maomi reminder state");
+            return false;
+        }
     }
 
     bool InitializeMaomiTools() {
@@ -855,6 +880,9 @@ private:
         if (!InitializeMaomiState()) {
             ESP_LOGW(TAG, "Maomi saved state unavailable; continuing with base firmware");
             return;
+        }
+        if (!InitializeMaomiReminders()) {
+            ESP_LOGW(TAG, "Maomi reminders disabled; local pet features remain enabled");
         }
         if (!InitializeMaomiPetCore()) {
             ESP_LOGW(TAG, "Maomi pet core disabled; continuing with base firmware");
