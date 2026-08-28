@@ -823,6 +823,12 @@ class MaomiToolsContractTest(unittest.TestCase):
             board_source,
         )
         self.assertIn("AllowsMaomiLocalPresentation", board_source)
+        self.assertIn("DecideInteractionSoundWait(", board_source)
+        self.assertIn("kMaomiInteractionSoundMaxWaitMs", board_source)
+        self.assertIn(
+            "maomi_interaction_last_update_ms_ = monotonic_ms;\n            return;",
+            board_source,
+        )
 
     def test_bond_points_are_saved_as_an_important_write(self):
         board_source = (
