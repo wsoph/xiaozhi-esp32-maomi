@@ -107,6 +107,26 @@ class MaomiHostCppTest(unittest.TestCase):
             ],
         )
 
+    def test_autonomy_contract(self):
+        self.compile_and_run(
+            "maomi-autonomy-test",
+            [
+                ROOT / "scripts" / "tests" / "maomi_autonomy_test.cc",
+                BOARD / "maomi_autonomy.cc",
+                BOARD / "maomi_clock.cc",
+            ],
+        )
+
+    def test_proactive_sound_contract(self):
+        self.compile_and_run(
+            "maomi-proactive-sound-test",
+            [
+                ROOT / "scripts" / "tests" / "maomi_proactive_sound_test.cc",
+                BOARD / "maomi_autonomy.cc",
+                BOARD / "maomi_clock.cc",
+            ],
+        )
+
     def test_clock_and_storage_contract(self):
         self.compile_and_run(
             "maomi-clock-storage-test",

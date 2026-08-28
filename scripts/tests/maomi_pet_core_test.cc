@@ -172,8 +172,8 @@ void TestActualEventMappingsAndPowerOrdering() {
     scheduler.Drain();
     CHECK(core.GetSnapshot().state == PetState::kHappy);
 
-    const PetState interactions[] = {PetState::kBeingPetted, PetState::kHappy,
-                                     PetState::kEating, PetState::kPlaying};
+    const PetState interactions[] = {PetState::kBeingPetted, PetState::kHappy, PetState::kEating,
+                                     PetState::kPlaying};
     for (const auto state : interactions) {
         CHECK(core.Submit(Event::Interaction(state)) == SubmitResult::kQueued);
         scheduler.Drain();
@@ -242,10 +242,10 @@ void TestCompletePriorityRestoreChain() {
 
 void TestEveryOfficialNonIdleStatePreempts() {
     const DeviceState official_states[] = {
-        kDeviceStateUnknown,      kDeviceStateStarting,   kDeviceStateWifiConfiguring,
-        kDeviceStateConnecting,   kDeviceStateListening,  kDeviceStateSpeaking,
-        kDeviceStateNotifying,    kDeviceStateUpgrading,  kDeviceStateActivating,
-        kDeviceStateAudioTesting, kDeviceStateFatalError,
+        kDeviceStateUnknown,    kDeviceStateStarting,   kDeviceStateWifiConfiguring,
+        kDeviceStateConnecting, kDeviceStateSpeaking,   kDeviceStateNotifying,
+        kDeviceStateUpgrading,  kDeviceStateActivating, kDeviceStateAudioTesting,
+        kDeviceStateFatalError,
     };
 
     for (const auto official_state : official_states) {
@@ -290,11 +290,32 @@ void TestEveryOfficialNonIdleStatePreempts() {
 
     FakeScheduler untrusted_flag_scheduler;
     auto untrusted_flag_core = MakeCore(untrusted_flag_scheduler);
-    auto forged_busy_event = Event::OfficialStateChanged(kDeviceStateListening);
+    auto forged_busy_event = Event::OfficialStateChanged(kDeviceStateSpeaking);
     forged_busy_event.flag = false;
     untrusted_flag_core.Submit(forged_busy_event);
     untrusted_flag_scheduler.Drain();
     CHECK(untrusted_flag_core.GetSnapshot().paused_by_official_state);
+}
+
+void TestListeningKeepsResumableInteractionVisible() {
+    FakeScheduler scheduler;
+    auto core = MakeCore(scheduler);
+
+    core.Submit(Event::OfficialStateChanged(kDeviceStateListening));
+    core.Submit(Event::Interaction(PetState::kBeingPetted));
+    scheduler.Drain();
+
+    const auto listening = core.GetSnapshot();
+    CHECK(!listening.paused_by_official_state);
+    CHECK(listening.official_state == kDeviceStateListening);
+    CHECK(listening.state == PetState::kBeingPetted);
+    CHECK(listening.priority == PetPriority::kInteraction);
+
+    core.Submit(Event::OfficialStateChanged(kDeviceStateSpeaking));
+    scheduler.Drain();
+    const auto speaking = core.GetSnapshot();
+    CHECK(speaking.paused_by_official_state);
+    CHECK(speaking.state == PetState::kIdle);
 }
 
 void TestObserverRunsOnlyOnScheduledDrain() {
@@ -400,7 +421,7 @@ void TestFullQueueRejectsOrdinaryButKeepsImportantEvents() {
     for (size_t i = 0; i < maomi::kEventQueueCapacity; ++i) {
         CHECK(official_core.Submit(Event::ConversationFinished()) == SubmitResult::kQueued);
     }
-    CHECK(official_core.Submit(Event::OfficialStateChanged(kDeviceStateListening)) ==
+    CHECK(official_core.Submit(Event::OfficialStateChanged(kDeviceStateSpeaking)) ==
           SubmitResult::kQueued);
     official_scheduler.Drain();
     CHECK(official_core.GetSnapshot().paused_by_official_state);
@@ -482,6 +503,7 @@ int main() {
     TestActualEventMappingsAndPowerOrdering();
     TestCompletePriorityRestoreChain();
     TestEveryOfficialNonIdleStatePreempts();
+    TestListeningKeepsResumableInteractionVisible();
     TestObserverRunsOnlyOnScheduledDrain();
     TestObserverCapacityIsBoundedAndReusable();
     TestOneThousandCoalescedEventsFromWorker();

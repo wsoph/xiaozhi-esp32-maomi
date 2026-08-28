@@ -103,7 +103,11 @@ UiRenderPlan UiMapper::Resolve(const Snapshot& snapshot, const PowerUiDecision& 
     }
 
     const auto overlay = OverlayFor(snapshot.official_state);
-    if (snapshot.paused_by_official_state || overlay != SystemOverlay::kNone) {
+    const bool listening_local_expression = snapshot.official_state == kDeviceStateListening &&
+                                            (snapshot.priority == PetPriority::kReminder ||
+                                             snapshot.priority == PetPriority::kInteraction);
+    if (!listening_local_expression &&
+        (snapshot.paused_by_official_state || overlay != SystemOverlay::kNone)) {
         return OfficialPlan(overlay == SystemOverlay::kNone ? SystemOverlay::kUnknown : overlay);
     }
 

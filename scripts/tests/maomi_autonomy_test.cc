@@ -88,17 +88,11 @@ void TestSixtySecondsEntersDrowsyAndBreathes() {
     CHECK(snapshot.drowsy);
     CHECK(snapshot.low_brightness);
 
-    controller.Update(10'000 + maomi::kDrowsyAfterMs + maomi::kSleepyActionDurationMs, inputs);
+    const auto first_breath =
+        controller.Update(10'000 + maomi::kDrowsyAfterMs + maomi::kSleepyActionDurationMs, inputs);
+    CHECK(first_breath.started_action == maomi::AutonomyAction::kSleepBreath);
     snapshot = controller.GetSnapshot();
-    CHECK(snapshot.next_breath_ms >= 10'000 + maomi::kDrowsyAfterMs +
-                                         maomi::kSleepyActionDurationMs +
-                                         maomi::kBreathMinimumIntervalMs);
-    CHECK(snapshot.next_breath_ms <= 10'000 + maomi::kDrowsyAfterMs +
-                                         maomi::kSleepyActionDurationMs +
-                                         maomi::kBreathMaximumIntervalMs);
-
-    const auto breath = controller.Update(snapshot.next_breath_ms, inputs);
-    CHECK(breath.started_action == maomi::AutonomyAction::kSleepBreath);
+    CHECK(snapshot.active_action == maomi::AutonomyAction::kSleepBreath);
     CHECK(controller.GetSnapshot().low_brightness);
 }
 
@@ -172,6 +166,30 @@ void TestMonotonicRollbackRecoversSafely() {
     CHECK(snapshot.next_look_ms >= 1'000 + maomi::kLookMinimumIntervalMs);
 }
 
+void TestActionsRemainVisibleForCompleteAnimationCyclesAndSleepIsContinuous() {
+    static_assert(maomi::kBlinkActionDurationMs >= 2 * 3 * 140);
+    static_assert(maomi::kLookActionDurationMs >= 2 * 4 * 420);
+    static_assert(maomi::kBreathActionDurationMs >= 2 * 4 * 700);
+
+    maomi::AutonomyController controller(43u);
+    auto inputs = IdleInputs();
+    controller.Update(0, inputs);
+
+    const auto sleepy = controller.Update(maomi::kDrowsyAfterMs, inputs);
+    CHECK(sleepy.started_action == maomi::AutonomyAction::kBecomeSleepy);
+
+    const auto breathing =
+        controller.Update(maomi::kDrowsyAfterMs + maomi::kSleepyActionDurationMs, inputs);
+    CHECK(breathing.started_action == maomi::AutonomyAction::kSleepBreath);
+    CHECK(controller.GetSnapshot().active_action == maomi::AutonomyAction::kSleepBreath);
+
+    const auto next_cycle = controller.Update(
+        maomi::kDrowsyAfterMs + maomi::kSleepyActionDurationMs + maomi::kBreathActionDurationMs,
+        inputs);
+    CHECK(next_cycle.started_action == maomi::AutonomyAction::kSleepBreath);
+    CHECK(controller.GetSnapshot().active_action == maomi::AutonomyAction::kSleepBreath);
+}
+
 void TestFixedSeedTenThousandStepSimulationIsRepeatableAndBounded() {
     maomi::AutonomyController first(0x5A17u);
     maomi::AutonomyController second(0x5A17u);
@@ -242,6 +260,7 @@ int main() {
     TestEveryActivityRestoresAndRestartsIdleTiming();
     TestOfficialAndHigherPriorityStatePreemptImmediately();
     TestMonotonicRollbackRecoversSafely();
+    TestActionsRemainVisibleForCompleteAnimationCyclesAndSleepIsContinuous();
     TestFixedSeedTenThousandStepSimulationIsRepeatableAndBounded();
     std::cout << "maomi autonomy tests passed" << std::endl;
     return 0;

@@ -105,14 +105,18 @@ struct Snapshot {
     uint32_t reminder_signals = 0;
 };
 
+// Continuous listening is a transparent official state for explicit pet interactions and
+// reminders. All other non-idle states keep ownership of the screen and local presentation.
+bool AllowsMaomiLocalPresentation(DeviceState state);
+
 /*
  * Deterministic state/event table:
  * - wake -> curious; conversation finished -> happy;
  * - interaction -> being_petted/happy/eating/playing;
  * - charging/battery -> charging/full/low_battery;
  * - reminder -> reminding; tick/time-valid only update metadata;
- * - every official non-idle state pauses pet output and official idle restores only
- *   expression slots marked resumable.
+ * - speaking and other official busy states pause pet output; continuous listening keeps
+ *   resumable local expressions available; official idle restores resumable slots.
  *
  * Priority slots are reminder > power > interaction > autonomous. Releasing a
  * slot reveals the next active lower-priority slot. Invalid enum values, idle as

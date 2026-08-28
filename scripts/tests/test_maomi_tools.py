@@ -812,6 +812,28 @@ class MaomiToolsContractTest(unittest.TestCase):
         self.assertNotIn("maomi_meow_2.ogg", board_source)
         self.assertNotIn("maomi_next_meow_sound_", board_source)
 
+    def test_interactions_are_visible_and_audible_during_continuous_listening(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            "snapshot.paused_by_official_state ||\n"
+            "            snapshot.priority != maomi::PetPriority::kInteraction",
+            board_source,
+        )
+        self.assertIn("AllowsMaomiLocalPresentation", board_source)
+
+    def test_bond_points_are_saved_as_an_important_write(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        interaction_handler = board_source.split(
+            "maomi::InteractionToolResult HandleMaomiInteraction", 1
+        )[1].split("maomi::PetToolSnapshot GetMaomiToolSnapshot", 1)[0]
+        self.assertIn("WriteImportance::kImportant", interaction_handler)
+
 
 if __name__ == "__main__":
     unittest.main()

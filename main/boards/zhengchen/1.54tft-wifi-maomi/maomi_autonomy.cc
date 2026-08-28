@@ -284,8 +284,9 @@ void AutonomyController::FinishAction(uint64_t now_ms) {
     snapshot_.active_action = AutonomyAction::kNone;
     active_until_ms_ = 0;
     if (completed == AutonomyAction::kBecomeSleepy || completed == AutonomyAction::kSleepBreath) {
-        snapshot_.next_breath_ms =
-            SafeAdd(now_ms, RandomInterval(kBreathMinimumIntervalMs, kBreathMaximumIntervalMs));
+        // Keep the sleeping animation continuous once drowsy. The old randomized gap made the
+        // display fall back to a static idle face for four to eight seconds between GIF cycles.
+        snapshot_.next_breath_ms = now_ms;
     }
 }
 
@@ -312,8 +313,7 @@ void AutonomyController::FinishSound(uint64_t now_ms) {
     snapshot_.active_sound = AutonomySound::kNone;
     sound_until_ms_ = 0;
     if (snapshot_.drowsy) {
-        snapshot_.next_breath_ms =
-            SafeAdd(now_ms, RandomInterval(kBreathMinimumIntervalMs, kBreathMaximumIntervalMs));
+        snapshot_.next_breath_ms = now_ms;
     }
 }
 

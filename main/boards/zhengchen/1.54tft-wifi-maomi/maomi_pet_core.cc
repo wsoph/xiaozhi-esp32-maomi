@@ -79,10 +79,14 @@ Event Event::ReleaseExpression(PetPriority priority) {
     return event;
 }
 
+bool AllowsMaomiLocalPresentation(DeviceState state) {
+    return state == kDeviceStateIdle || state == kDeviceStateListening;
+}
+
 PetCore::PetCore(MainTaskScheduler scheduler, Logger logger, DeviceState initial_official_state)
     : scheduler_(std::move(scheduler)), logger_(std::move(logger)) {
     snapshot_.official_state = initial_official_state;
-    snapshot_.paused_by_official_state = initial_official_state != kDeviceStateIdle;
+    snapshot_.paused_by_official_state = !AllowsMaomiLocalPresentation(initial_official_state);
 }
 
 SubmitResult PetCore::Submit(const Event& event) {
@@ -354,12 +358,12 @@ void PetCore::ProcessOnMainTask(const Event& event) {
         switch (event.type) {
             case EventType::kUserWake:
                 snapshot_.wake_signals = SaturatingAdd(snapshot_.wake_signals, event.occurrences);
-                if (!snapshot_.paused_by_official_state) {
+                if (snapshot_.official_state == kDeviceStateIdle) {
                     SetExpression(PetPriority::kInteraction, PetState::kCurious, false);
                 }
                 break;
             case EventType::kConversationFinished:
-                if (!snapshot_.paused_by_official_state) {
+                if (snapshot_.official_state == kDeviceStateIdle) {
                     SetExpression(PetPriority::kInteraction, PetState::kHappy, false);
                 }
                 break;
@@ -405,7 +409,8 @@ void PetCore::ProcessOnMainTask(const Event& event) {
                 break;
             case EventType::kOfficialStateChanged:
                 snapshot_.official_state = static_cast<DeviceState>(event.value);
-                snapshot_.paused_by_official_state = snapshot_.official_state != kDeviceStateIdle;
+                snapshot_.paused_by_official_state =
+                    !AllowsMaomiLocalPresentation(snapshot_.official_state);
                 if (event.flag) {
                     for (auto& expression : expressions_) {
                         if (expression.active && !expression.resume_after_official) {

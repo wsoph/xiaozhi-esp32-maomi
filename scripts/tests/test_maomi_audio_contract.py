@@ -122,6 +122,36 @@ class MaomiAudioContractTest(unittest.TestCase):
         self.assertIn("SetDiscardVoiceUploadOnWake(true)", maomi_board)
         self.assertNotIn("SetDiscardVoiceUploadOnWake", original_board)
 
+    def test_local_sound_suspends_and_restores_continuous_listening_upload(self):
+        source = BOARD_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("maomi_local_sound_suspended_voice_processing_", source)
+        self.assertIn("SuspendMaomiVoiceUploadForLocalSound", source)
+        self.assertIn("RestoreMaomiVoiceUploadAfterLocalSound", source)
+        self.assertRegex(
+            source,
+            r"playback_id == maomi_local_sound_playback_id_[\s\S]*"
+            r"RestoreMaomiVoiceUploadAfterLocalSound\(\)",
+        )
+
+    def test_busy_state_transition_cancels_tracked_local_sound(self):
+        source = BOARD_SOURCE.read_text(encoding="utf-8")
+        state_change = source.split(
+            "if (official_state != last_maomi_official_state_)", 1
+        )[1].split("if (++maomi_poll_divider_ < 10)", 1)[0]
+
+        self.assertIn("!maomi::AllowsMaomiLocalPresentation(official_state)", state_change)
+        self.assertIn("CancelTrackedMaomiSound()", state_change)
+        self.assertIn("Application::GetInstance().Schedule", state_change)
+        self.assertLess(
+            state_change.index("Application::GetInstance().Schedule"),
+            state_change.index("CancelTrackedMaomiSound()"),
+        )
+        self.assertLess(
+            state_change.index("CancelTrackedMaomiSound()"),
+            state_change.index("maomi_pet_core_.Submit"),
+        )
+
     def test_official_fallback_keeps_the_streamable_synchronous_path(self):
         source = BOARD_SOURCE.read_text(encoding="utf-8")
         start = source.index("maomi::WakePlaybackStart StartMaomiLocalResponse()")

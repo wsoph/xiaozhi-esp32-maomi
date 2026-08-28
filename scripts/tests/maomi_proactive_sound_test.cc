@@ -245,6 +245,27 @@ void TestLocalMeowImmediatelyYieldsToWakeAndPriority() {
     run_interruption(false);
 }
 
+void TestSleepingResumesImmediatelyAfterProactiveMeow() {
+    maomi::AutonomyController controller(707u);
+    auto inputs = EligibleInputs(ClockAt(2026, 8, 26, 9, 0, 0));
+    uint64_t meow_ms = 0;
+    for (int elapsed = 0; elapsed <= 10 * 60; ++elapsed) {
+        const uint64_t now_ms = static_cast<uint64_t>(elapsed) * 60'000;
+        inputs.clock = ClockAt(2026, 8, 26, 9 + elapsed / 60, elapsed % 60, now_ms);
+        if (controller.Update(now_ms, inputs).started_sound ==
+            maomi::AutonomySound::kPlayLocalMeow) {
+            meow_ms = now_ms;
+            break;
+        }
+    }
+
+    CHECK(meow_ms != 0);
+    CHECK(controller.GetSnapshot().drowsy);
+    const auto resumed = controller.Update(meow_ms + maomi::kLocalMeowActionDurationMs, inputs);
+    CHECK(resumed.started_action == maomi::AutonomyAction::kSleepBreath);
+    CHECK(controller.GetSnapshot().active_action == maomi::AutonomyAction::kSleepBreath);
+}
+
 }  // namespace
 
 int main() {
@@ -256,6 +277,7 @@ int main() {
     TestNewDayResetsBudgetButRollbackCannotBypassIt();
     TestContinuousDayAcrossMidnightStaysQuietThenUsesNewBudget();
     TestLocalMeowImmediatelyYieldsToWakeAndPriority();
+    TestSleepingResumesImmediatelyAfterProactiveMeow();
     std::cout << "maomi proactive sound tests passed" << std::endl;
     return 0;
 }

@@ -98,6 +98,7 @@ private:
     bool last_maomi_time_valid_ = false;
     uint64_t maomi_last_clock_observe_second_ = UINT64_MAX;
     bool maomi_autonomy_sound_playing_ = false;
+    bool maomi_local_sound_suspended_voice_processing_ = false;
     std::optional<maomi::PetAction> maomi_active_interaction_;
     uint64_t maomi_interaction_remaining_ms_ = 0;
     uint64_t maomi_interaction_last_update_ms_ = 0;
@@ -114,6 +115,29 @@ private:
         auto& audio_service = Application::GetInstance().GetAudioService();
         audio_service.EnableVoiceProcessing(false);
         audio_service.DiscardVoiceUploadBacklog();
+    }
+
+    void SuspendMaomiVoiceUploadForLocalSound() {
+        auto& app = Application::GetInstance();
+        auto& audio_service = app.GetAudioService();
+        if (maomi_local_sound_suspended_voice_processing_ ||
+            app.GetDeviceState() != kDeviceStateListening ||
+            !audio_service.IsAudioProcessorRunning()) {
+            return;
+        }
+        StopMaomiVoiceUpload();
+        maomi_local_sound_suspended_voice_processing_ = true;
+    }
+
+    void RestoreMaomiVoiceUploadAfterLocalSound() {
+        if (!maomi_local_sound_suspended_voice_processing_) {
+            return;
+        }
+        maomi_local_sound_suspended_voice_processing_ = false;
+        auto& app = Application::GetInstance();
+        if (app.GetDeviceState() == kDeviceStateListening) {
+            app.GetAudioService().EnableVoiceProcessing(true);
+        }
     }
 
     uint32_t NextMaomiPlaybackId() {
@@ -146,9 +170,11 @@ private:
             size == 0) {
             return false;
         }
+        SuspendMaomiVoiceUploadForLocalSound();
         const uint32_t playback_id = NextMaomiPlaybackId();
         if (!audio_service.TryPlaySound(std::string_view(static_cast<const char*>(data), size),
                                         false, playback_id)) {
+            RestoreMaomiVoiceUploadAfterLocalSound();
             return false;
         }
         maomi_local_sound_playback_id_ = playback_id;
@@ -163,6 +189,7 @@ private:
         Application::GetInstance().GetAudioService().ResetDecoder();
         maomi_local_sound_playback_id_ = 0;
         maomi_autonomy_sound_playing_ = false;
+        RestoreMaomiVoiceUploadAfterLocalSound();
     }
 
     static const char* InteractionSoundName(maomi::PetAction action) {
@@ -176,14 +203,14 @@ private:
     }
 
     void TryPlayPendingInteractionSound(const maomi::Snapshot& snapshot) {
-        if (!maomi_pending_interaction_sound_.has_value() || snapshot.paused_by_official_state ||
+        if (!maomi_pending_interaction_sound_.has_value() ||
+            !maomi::AllowsMaomiLocalPresentation(snapshot.official_state) ||
             snapshot.priority != maomi::PetPriority::kInteraction) {
             return;
         }
         const auto action = *maomi_pending_interaction_sound_;
         const bool state_matches =
-            (action == maomi::PetAction::kPet &&
-             snapshot.state == maomi::PetState::kBeingPetted) ||
+            (action == maomi::PetAction::kPet && snapshot.state == maomi::PetState::kBeingPetted) ||
             (action == maomi::PetAction::kFeed && snapshot.state == maomi::PetState::kEating) ||
             (action == maomi::PetAction::kPlay && snapshot.state == maomi::PetState::kPlaying);
         if (!state_matches) {
@@ -299,6 +326,7 @@ private:
                 if (playback_id == maomi_local_sound_playback_id_) {
                     maomi_local_sound_playback_id_ = 0;
                     maomi_autonomy_sound_playing_ = false;
+                    RestoreMaomiVoiceUploadAfterLocalSound();
                 }
                 maomi_wake_.HandlePlaybackFinished(MonotonicMs(), app.GetDeviceState(),
                                                    playback_id);
@@ -639,7 +667,7 @@ private:
         if (bond_update.persistent_state_changed) {
             const auto merged = maomi_bond_->MergePersistentState(maomi_storage_.GetState());
             save_result =
-                maomi_storage_.Update(merged, maomi::WriteImportance::kNormal, MonotonicMs());
+                maomi_storage_.Update(merged, maomi::WriteImportance::kImportant, MonotonicMs());
         }
         result.state = maomi::ToolOperationState::kQueued;
         result.points_added = bond_update.points_added;
@@ -800,7 +828,12 @@ private:
         const auto official_state = Application::GetInstance().GetDeviceState();
         if (official_state != last_maomi_official_state_) {
             last_maomi_official_state_ = official_state;
-            maomi_pet_core_.Submit(maomi::Event::OfficialStateChanged(official_state));
+            Application::GetInstance().Schedule([this, official_state]() {
+                if (!maomi::AllowsMaomiLocalPresentation(official_state)) {
+                    CancelTrackedMaomiSound();
+                }
+                maomi_pet_core_.Submit(maomi::Event::OfficialStateChanged(official_state));
+            });
         }
 
         if (++maomi_poll_divider_ < 10) {

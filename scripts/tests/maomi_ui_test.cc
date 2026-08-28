@@ -180,6 +180,35 @@ void TestInvalidOrInconsistentStateFailsClosed() {
     CHECK(unknown_plan.overlay == maomi::SystemOverlay::kUnknown);
 }
 
+void TestListeningLetsInteractionAndReminderPresentationsThrough() {
+    FakeAssetCatalog assets;
+    assets.Add("maomi_pet.gif");
+    assets.Add("maomi_reminder.gif");
+    maomi::UiMapper mapper;
+
+    auto interaction = IdleSnapshot(maomi::PetState::kBeingPetted);
+    interaction.priority = maomi::PetPriority::kInteraction;
+    interaction.official_state = kDeviceStateListening;
+    interaction.paused_by_official_state = false;
+    const auto interaction_plan = mapper.Resolve(interaction, false, assets);
+    CHECK(interaction_plan.surface == maomi::UiSurface::kPet);
+    CHECK(interaction_plan.pet_state == maomi::PetState::kBeingPetted);
+
+    auto reminder = interaction;
+    reminder.state = maomi::PetState::kReminding;
+    reminder.priority = maomi::PetPriority::kReminder;
+    const auto reminder_plan = mapper.Resolve(reminder, false, assets);
+    CHECK(reminder_plan.surface == maomi::UiSurface::kPet);
+    CHECK(reminder_plan.pet_state == maomi::PetState::kReminding);
+
+    auto autonomous = interaction;
+    autonomous.state = maomi::PetState::kBlinking;
+    autonomous.priority = maomi::PetPriority::kAutonomous;
+    const auto autonomous_plan = mapper.Resolve(autonomous, false, assets);
+    CHECK(autonomous_plan.surface == maomi::UiSurface::kOfficial);
+    CHECK(autonomous_plan.overlay == maomi::SystemOverlay::kListening);
+}
+
 maomi::PowerUiSample PowerSample(int battery_level, bool external_power_connected,
                                  bool battery_level_valid = true) {
     maomi::PowerUiSample sample;
@@ -401,6 +430,7 @@ int main() {
     TestMissingNonCriticalAssetsAlwaysUseOfficialFallbacks();
     TestOfficialAndHighTemperatureSurfacesPreemptWithoutAssetLookup();
     TestInvalidOrInconsistentStateFailsClosed();
+    TestListeningLetsInteractionAndReminderPresentationsThrough();
     TestPowerUiWaitsForStableBatteryData();
     TestLowBatteryUsesTwentyToTwentyFivePercentHysteresis();
     TestExternalPowerDeterministicallyMapsChargingFullAndUnplugged();
