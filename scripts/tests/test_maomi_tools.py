@@ -227,8 +227,8 @@ const McpServer::Tool& FindTool(const McpServer& server, std::string_view name) 
 }
 
 void AssertSchema(const McpServer& server) {
-    assert(server.tools.size() == 9);
-    std::array<std::string, 9> names = {
+    assert(server.tools.size() == 10);
+    std::array<std::string, 10> names = {
         server.tools[0].name,
         server.tools[1].name,
         server.tools[2].name,
@@ -238,14 +238,21 @@ void AssertSchema(const McpServer& server) {
         server.tools[6].name,
         server.tools[7].name,
         server.tools[8].name,
+        server.tools[9].name,
     };
     std::sort(names.begin(), names.end());
     assert(std::adjacent_find(names.begin(), names.end()) == names.end());
 
     const auto& interact = FindTool(server, maomi::kPetInteractToolName);
+    const auto& start_game = FindTool(server, maomi::kPetStartGameToolName);
     const auto& status = FindTool(server, maomi::kPetStatusToolName);
     const auto& quiet = FindTool(server, maomi::kPetQuietToolName);
     assert(!interact.description.empty());
+    assert(start_game.description.find("陪我玩") != std::string::npos);
+    assert(start_game.description.find("结束游戏") != std::string::npos);
+    assert(start_game.description.find("no_yes_no") != std::string::npos);
+    assert(start_game.description.find("cat_guess") != std::string::npos);
+    assert(start_game.description.find("mini_adventure") != std::string::npos);
     assert(!status.description.empty());
     assert(!quiet.description.empty());
 
@@ -257,6 +264,15 @@ void AssertSchema(const McpServer& server) {
         assert(!property.has_default_value());
     }
     assert(interact_fields == 1);
+
+    size_t start_game_fields = 0;
+    for (const auto& property : start_game.properties) {
+        ++start_game_fields;
+        assert(property.name() == "game");
+        assert(property.type() == kPropertyTypeString);
+        assert(!property.has_default_value());
+    }
+    assert(start_game_fields == 1);
 
     size_t status_fields = 0;
     for (const auto& property : status.properties) {
@@ -384,6 +400,7 @@ void AssertSchema(const McpServer& server) {
 int main() {
     McpServer server;
     std::atomic<int> interactions{0};
+    std::atomic<int> game_starts{0};
     std::atomic<bool> reject_interactions{false};
     std::atomic<int> quiet_updates{0};
     std::atomic<bool> quiet{false};
@@ -398,6 +415,18 @@ int main() {
         result.points_added = action == maomi::PetAction::kPlay ? 3 : 2;
         result.bond_points = 17 + result.points_added;
         result.sound_queued = true;
+        return result;
+    };
+    dependencies.start_game = [&game_starts, &reject_interactions](maomi::VoiceGame game) {
+        ++game_starts;
+        assert(game == maomi::VoiceGame::kNoYesNo || game == maomi::VoiceGame::kCatGuess ||
+               game == maomi::VoiceGame::kMiniAdventure);
+        maomi::InteractionToolResult result;
+        result.state = reject_interactions ? maomi::ToolOperationState::kRejected
+                                           : maomi::ToolOperationState::kQueued;
+        result.action = maomi::PetAction::kPlay;
+        result.points_added = 3;
+        result.bond_points = 23;
         return result;
     };
     dependencies.get_status = [&quiet]() {
@@ -533,6 +562,40 @@ int main() {
     reject_interactions = false;
     assert(interactions == 4);
 
+    const auto no_yes_no = server.Invoke(
+        maomi::kPetStartGameToolName, {{"game", std::string("no_yes_no")}});
+    const auto cat_guess = server.Invoke(
+        maomi::kPetStartGameToolName, {{"game", std::string("cat_guess")}});
+    const auto mini_adventure = server.Invoke(
+        maomi::kPetStartGameToolName, {{"game", std::string("mini_adventure")}});
+    assert(no_yes_no.find("\"game\":\"no_yes_no\"") != std::string::npos);
+    assert(no_yes_no.find("\"round_limit\":5") != std::string::npos);
+    assert(no_yes_no.find("第5回合") != std::string::npos);
+    assert(cat_guess.find("\"game\":\"cat_guess\"") != std::string::npos);
+    assert(cat_guess.find("\"round_limit\":8") != std::string::npos);
+    assert(cat_guess.find("第8问") != std::string::npos);
+    assert(mini_adventure.find("\"game\":\"mini_adventure\"") != std::string::npos);
+    assert(mini_adventure.find("\"round_limit\":4") != std::string::npos);
+    assert(mini_adventure.find("第4次行动") != std::string::npos);
+    assert(mini_adventure.find("\"presentation\":\"play\"") != std::string::npos);
+    assert(mini_adventure.find("\"points_added\":3") != std::string::npos);
+    assert(game_starts == 3);
+
+    ExpectError([&server]() { server.Invoke(maomi::kPetStartGameToolName); });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kPetStartGameToolName, {{"game", true}});
+    });
+    ExpectError([&server]() {
+        server.Invoke(maomi::kPetStartGameToolName, {{"game", std::string("story_chain")}});
+    });
+    assert(game_starts == 3);
+    reject_interactions = true;
+    ExpectError([&server]() {
+        server.Invoke(maomi::kPetStartGameToolName, {{"game", std::string("cat_guess")}});
+    });
+    reject_interactions = false;
+    assert(game_starts == 4);
+
     const auto status = server.Invoke(maomi::kPetStatusToolName);
     assert(status.find("\"name\":\"小猫咪\"") != std::string::npos);
     assert(status.find("\"bond_points\":20") != std::string::npos);
@@ -659,6 +722,10 @@ int main() {
                                   {{"action", std::string("pet")}});
     });
     ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kPetStartGameToolName,
+                                  {{"game", std::string("no_yes_no")}});
+    });
+    ExpectError([&unavailable_server]() {
         unavailable_server.Invoke(maomi::kPetStatusToolName);
     });
     ExpectError([&unavailable_server]() {
@@ -779,6 +846,18 @@ class MaomiToolsContractTest(unittest.TestCase):
         self.assertIn("kMaomiReminderSoundName", board_source)
         self.assertIn(
             "ReleaseExpression(maomi::PetPriority::kReminder)", board_source
+        )
+
+    def test_board_starts_voice_games_through_one_play_interaction(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(".start_game =", board_source)
+        self.assertRegex(
+            board_source,
+            r"start_game\s*=\s*\[this\]\(maomi::VoiceGame[^)]*\)\s*\{\s*"
+            r"return HandleMaomiInteraction\(maomi::PetAction::kPlay\);\s*\}",
         )
 
     def test_board_routes_blink_and_pet_to_their_dedicated_presentations(self):

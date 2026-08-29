@@ -13,6 +13,7 @@ class McpServer;
 namespace maomi {
 
 inline constexpr char kPetInteractToolName[] = "self.pet.interact";
+inline constexpr char kPetStartGameToolName[] = "self.pet.start_game";
 inline constexpr char kPetStatusToolName[] = "self.pet.get_status";
 inline constexpr char kPetQuietToolName[] = "self.pet.set_quiet";
 inline constexpr char kCountdownToolName[] = "self.timer.start_countdown";
@@ -26,6 +27,12 @@ enum class PetAction : uint8_t {
     kPet,
     kFeed,
     kPlay,
+};
+
+enum class VoiceGame : uint8_t {
+    kNoYesNo,
+    kCatGuess,
+    kMiniAdventure,
 };
 
 enum class ToolOperationState : uint8_t {
@@ -63,6 +70,7 @@ struct PetToolSnapshot {
 
 struct PetToolDependencies {
     std::function<InteractionToolResult(PetAction)> interact;
+    std::function<InteractionToolResult(VoiceGame)> start_game;
     std::function<PetToolSnapshot()> get_status;
     std::function<QuietToolResult(bool)> set_quiet;
 };

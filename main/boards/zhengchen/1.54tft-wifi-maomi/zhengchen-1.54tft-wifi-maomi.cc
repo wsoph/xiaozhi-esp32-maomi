@@ -730,6 +730,9 @@ private:
                 {
                     .interact =
                         [this](maomi::PetAction action) { return HandleMaomiInteraction(action); },
+                    .start_game = [this](maomi::VoiceGame) {
+                        return HandleMaomiInteraction(maomi::PetAction::kPlay);
+                    },
                     .get_status = [this]() { return GetMaomiToolSnapshot(); },
                     .set_quiet = [this](bool enabled) { return SetMaomiQuiet(enabled); },
                 });

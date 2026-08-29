@@ -25,6 +25,58 @@ PetAction ParseAction(const std::string& action) {
     throw std::runtime_error("Unsupported pet action; allowed values are pet, feed, and play");
 }
 
+VoiceGame ParseVoiceGame(const std::string& game) {
+    if (game == "no_yes_no") {
+        return VoiceGame::kNoYesNo;
+    }
+    if (game == "cat_guess") {
+        return VoiceGame::kCatGuess;
+    }
+    if (game == "mini_adventure") {
+        return VoiceGame::kMiniAdventure;
+    }
+    throw std::runtime_error(
+        "Unsupported voice game; allowed values are no_yes_no, cat_guess, and mini_adventure");
+}
+
+const char* VoiceGameText(VoiceGame game) {
+    switch (game) {
+        case VoiceGame::kNoYesNo:
+            return "no_yes_no";
+        case VoiceGame::kCatGuess:
+            return "cat_guess";
+        case VoiceGame::kMiniAdventure:
+            return "mini_adventure";
+    }
+    return nullptr;
+}
+
+uint8_t VoiceGameRoundLimit(VoiceGame game) {
+    switch (game) {
+        case VoiceGame::kNoYesNo:
+            return 5;
+        case VoiceGame::kCatGuess:
+            return 8;
+        case VoiceGame::kMiniAdventure:
+            return 4;
+    }
+    return 0;
+}
+
+const char* VoiceGameInstruction(VoiceGame game) {
+    switch (game) {
+        case VoiceGame::kNoYesNo:
+            return "先用一句话说明不能明确用是或不是作答，立即提出第1个轻松问题。"
+                   "最多5个玩家回答回合；玩家明确用是或不是作答时结束，否则第5回合后宣布玩家"
+                   "获胜。不要误判其他词里的同音或单字。";
+        case VoiceGame::kCatGuess:
+            return "请玩家在心里想一个常见动物、食物或物品，想好后说想好了。收到确认后逐个提问，最多8问；第8问后必须给出最终猜测。玩家提前揭晓时自然收尾。";
+        case VoiceGame::kMiniAdventure:
+            return "用一两句话创建轻松安全的冒险并给出第1次选择。每次根据玩家行动推进剧情并给2到3个选择，也接受自由行动；第4次行动后给出完整结局。";
+    }
+    return nullptr;
+}
+
 const char* ActionText(PetAction action) {
     switch (action) {
         case PetAction::kPet:
@@ -134,6 +186,31 @@ std::string InteractionJson(const InteractionToolResult& result) {
     json += ",\"persistence_pending\":";
     json += BoolText(result.persistence_pending);
     json += "}";
+    return json;
+}
+
+std::string VoiceGameStartJson(const InteractionToolResult& result, VoiceGame game) {
+    ValidateInteractionResult(result, PetAction::kPlay);
+    const char* game_text = VoiceGameText(game);
+    const char* instruction = VoiceGameInstruction(game);
+    const uint8_t round_limit = VoiceGameRoundLimit(game);
+    if (game_text == nullptr || instruction == nullptr || round_limit == 0) {
+        throw std::runtime_error("Voice game returned an invalid device result");
+    }
+
+    std::string json = "{\"ok\":true,\"status\":\"";
+    json += OperationText(result.state);
+    json += "\",\"game\":\"";
+    json += game_text;
+    json += "\",\"presentation\":\"play\",\"round_limit\":";
+    json += std::to_string(round_limit);
+    json += ",\"points_added\":" + std::to_string(result.points_added);
+    json += ",\"bond_points\":" + std::to_string(result.bond_points);
+    json += ",\"persistence_pending\":";
+    json += BoolText(result.persistence_pending);
+    json += ",\"instruction\":\"";
+    json += instruction;
+    json += "\"}";
     return json;
 }
 
@@ -488,6 +565,22 @@ void RegisterPetTools(McpServer& server, PetToolDependencies dependencies) {
             const auto result = interact(action);
             ValidateInteractionResult(result, action);
             return InteractionJson(result);
+        });
+
+    auto start_game = std::move(dependencies.start_game);
+    server.AddTool(
+        kPetStartGameToolName,
+        "当主人说陪我玩、我们一起玩或明确要玩语言游戏时必须调用。game 只能是 "
+        "no_yes_no、cat_guess、mini_adventure；未指定游戏时优先选择 no_yes_no。成功后按返回的 "
+        "instruction 进行1到3分钟的对话游戏，一局内不得再次调用。主人说结束游戏、不玩了或同义表达时"
+        "立即结束，不继续追问。普通摸摸、喂食或只播放玩耍动画仍使用 self.pet.interact。",
+        PropertyList({Property("game", kPropertyTypeString)}),
+        [start_game = std::move(start_game)](const PropertyList& properties) -> ReturnValue {
+            if (!start_game) {
+                throw std::runtime_error("Voice games are unavailable on this device");
+            }
+            const VoiceGame game = ParseVoiceGame(properties["game"].value<std::string>());
+            return VoiceGameStartJson(start_game(game), game);
         });
 
     auto get_status = std::move(dependencies.get_status);
