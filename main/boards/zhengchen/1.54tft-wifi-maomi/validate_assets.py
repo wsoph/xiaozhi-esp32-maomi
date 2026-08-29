@@ -11,7 +11,7 @@ from pathlib import Path
 ENTRY_NAME_BYTES = 32
 ENTRY_SIZE = 44
 HEADER_SIZE = 12
-CUSTOM_IMAGE_SIZE = (128, 128)
+CUSTOM_IMAGE_SIZE = (240, 240)
 MAX_LOCAL_SOUND_GRANULE = 2 * 48_000
 
 
@@ -89,7 +89,7 @@ def _validate_extra_asset(path):
         )
         _require(
             struct.unpack_from(">II", data, 16) == CUSTOM_IMAGE_SIZE,
-            f"PNG asset must be 128x128: {path}",
+            f"PNG asset must be 240x240: {path}",
         )
     elif extension == ".gif":
         _require(
@@ -98,7 +98,7 @@ def _validate_extra_asset(path):
         )
         _require(
             struct.unpack_from("<HH", data, 6) == CUSTOM_IMAGE_SIZE,
-            f"GIF asset must be 128x128: {path}",
+            f"GIF asset must be 240x240: {path}",
         )
         _require(data.count(b"\x21\xf9\x04") >= 2, f"GIF asset is not animated: {path}")
     elif extension == ".ogg":

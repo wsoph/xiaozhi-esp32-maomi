@@ -47,6 +47,7 @@ constexpr uint32_t kMaomiAutonomyRandomSeed = 0x4D414F4Du;
 constexpr uint64_t kMaomiInteractionVisibleDurationMs = 4'000;
 constexpr uint64_t kMaomiReminderVisibleDurationMs = 4'000;
 constexpr char kMaomiReminderSoundName[] = "maomi_prompt.ogg";
+constexpr char kMaomiLowBatteryVoiceSoundName[] = "maomi_low_battery_voice.ogg";
 
 bool IsMaomiConversationState(DeviceState state) {
     return state == kDeviceStateListening || state == kDeviceStateSpeaking;
@@ -109,6 +110,7 @@ private:
     uint64_t maomi_reminder_remaining_ms_ = 0;
     uint64_t maomi_reminder_last_update_ms_ = 0;
     bool maomi_reminder_sound_pending_ = false;
+    bool maomi_low_battery_voice_pending_ = false;
     uint16_t maomi_countdown_due_id_ = 0;
     uint16_t maomi_displayed_countdown_id_ = 0;
     int32_t maomi_displayed_countdown_seconds_ = -1;
@@ -336,6 +338,11 @@ private:
             .external_power_connected = maomi_external_power_connected_,
         };
         const auto power = maomi_power_ui_policy_.Update(power_sample);
+        if (maomi_external_power_connected_) {
+            maomi_low_battery_voice_pending_ = false;
+        } else if (power.request_low_battery_voice) {
+            maomi_low_battery_voice_pending_ = true;
+        }
         const auto plan =
             maomi_ui_mapper_.Resolve(snapshot, power, maomi_high_temperature_, maomi_ui_assets_);
         if (plan.surface != maomi::UiSurface::kPet) {
@@ -562,6 +569,24 @@ private:
         }
     }
 
+    void TryStartPendingMaomiLowBatteryVoice() {
+        if (!maomi_low_battery_voice_pending_) {
+            return;
+        }
+        if (!HasMaomiSound(kMaomiLowBatteryVoiceSoundName)) {
+            maomi_low_battery_voice_pending_ = false;
+            ESP_LOGW(TAG, "Maomi low-battery voice asset unavailable");
+            return;
+        }
+        if (!Application::GetInstance().GetAudioService().IsPlaybackIdle() ||
+            maomi_local_sound_playback_id_ != 0) {
+            return;
+        }
+        if (TryPlayMaomiSound(kMaomiLowBatteryVoiceSoundName, false)) {
+            maomi_low_battery_voice_pending_ = false;
+        }
+    }
+
     void UpdateMaomiCountdownDisplay(uint64_t monotonic_ms) {
         if (!display_->IsSetupUICalled()) {
             return;
@@ -650,6 +675,7 @@ private:
         UpdateMaomiReminderLifetime(monotonic_ms, pet_snapshot);
         HandleMaomiRemindersOnMainTask(monotonic_ms, pet_snapshot);
         TryStartPendingMaomiReminderSound();
+        TryStartPendingMaomiLowBatteryVoice();
         UpdateMaomiCountdownDisplay(monotonic_ms);
         const auto before = maomi_autonomy_.GetSnapshot();
         const maomi::AutonomyInputs inputs = {

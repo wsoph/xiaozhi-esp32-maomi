@@ -160,6 +160,10 @@
             "required": true
         },
         {
+            "file": "maomi_low_battery_voice.ogg",
+            "required": true
+        },
+        {
             "file": "maomi_meow.ogg",
             "required": true
         },

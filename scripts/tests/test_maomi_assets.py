@@ -54,6 +54,7 @@ ANIMATION_FRAME_COUNTS = {
 }
 
 LOCAL_SOUNDS = [
+    "maomi_low_battery_voice.ogg",
     "maomi_meow.ogg",
     "maomi_prompt.ogg",
     "maomi_wake.ogg",
@@ -113,16 +114,16 @@ class MaomiAssetsTest(unittest.TestCase):
         self.assertEqual(manifest["capacity"]["partition_size_bytes"], 8 * 1024 * 1024)
         self.assertEqual(manifest["capacity"]["minimum_free_percent"], 10)
 
-    def test_custom_emojis_are_128_pixels_with_expected_animation_frames(self):
+    def test_custom_emojis_fill_the_240_pixel_square_screen(self):
         for filename in FALLBACK_EMOJIS:
             image = (BOARD / "assets-extra" / filename).read_bytes()
             self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n", filename)
-            self.assertEqual(struct.unpack_from(">II", image, 16), (128, 128), filename)
+            self.assertEqual(struct.unpack_from(">II", image, 16), (240, 240), filename)
 
         for filename in ANIMATED_EMOJIS:
             image = (BOARD / "assets-extra" / filename).read_bytes()
             self.assertIn(image[:6], (b"GIF87a", b"GIF89a"), filename)
-            self.assertEqual(struct.unpack_from("<HH", image, 6), (128, 128), filename)
+            self.assertEqual(struct.unpack_from("<HH", image, 6), (240, 240), filename)
             self.assertEqual(
                 image.count(b"\x21\xf9\x04"),
                 ANIMATION_FRAME_COUNTS[filename],
@@ -177,6 +178,10 @@ class MaomiAssetsTest(unittest.TestCase):
 
         self.assertIn(
             'constexpr char kMaomiReminderSoundName[] = "maomi_prompt.ogg";',
+            board_source,
+        )
+        self.assertIn(
+            'constexpr char kMaomiLowBatteryVoiceSoundName[] = "maomi_low_battery_voice.ogg";',
             board_source,
         )
 

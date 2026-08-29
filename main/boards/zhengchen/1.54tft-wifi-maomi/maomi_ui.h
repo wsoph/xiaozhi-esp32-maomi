@@ -78,6 +78,7 @@ struct PowerUiDecision {
     PetState pet_state = PetState::kIdle;
     bool override_pet_state = false;
     bool allow_autonomous_audio = true;
+    bool request_low_battery_voice = false;
 };
 
 // Stateful presentation policy only. Hardware sampling and protection remain owned by the

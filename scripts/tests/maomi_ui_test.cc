@@ -254,6 +254,20 @@ void TestLowBatteryUsesTwentyToTwentyFivePercentHysteresis() {
     }
 }
 
+void TestLowBatteryVoicePromptOnlyFiresOnceUntilBatteryRecovers() {
+    maomi::PowerUiPolicy policy;
+
+    CHECK(!policy.Update(PowerSample(21, false)).request_low_battery_voice);
+    CHECK(policy.Update(PowerSample(20, false)).request_low_battery_voice);
+    CHECK(!policy.Update(PowerSample(20, false)).request_low_battery_voice);
+    CHECK(!policy.Update(PowerSample(19, false)).request_low_battery_voice);
+    CHECK(!policy.Update(PowerSample(20, true)).request_low_battery_voice);
+    CHECK(!policy.Update(PowerSample(21, false)).request_low_battery_voice);
+    CHECK(!policy.Update(PowerSample(25, false)).request_low_battery_voice);
+    CHECK(!policy.Update(PowerSample(21, false)).request_low_battery_voice);
+    CHECK(policy.Update(PowerSample(20, false)).request_low_battery_voice);
+}
+
 void TestExternalPowerDeterministicallyMapsChargingFullAndUnplugged() {
     maomi::PowerUiPolicy policy;
 
@@ -433,6 +447,7 @@ int main() {
     TestListeningLetsInteractionAndReminderPresentationsThrough();
     TestPowerUiWaitsForStableBatteryData();
     TestLowBatteryUsesTwentyToTwentyFivePercentHysteresis();
+    TestLowBatteryVoicePromptOnlyFiresOnceUntilBatteryRecovers();
     TestExternalPowerDeterministicallyMapsChargingFullAndUnplugged();
     TestChargingOverridesLowBatteryWithoutClearingItsLatch();
     TestOfficialErrorAndHighTemperaturePreemptChargingPresentation();

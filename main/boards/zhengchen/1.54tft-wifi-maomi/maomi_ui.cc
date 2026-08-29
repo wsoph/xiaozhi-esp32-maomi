@@ -65,6 +65,7 @@ PowerUiDecision PowerUiPolicy::Update(const PowerUiSample& sample) {
         };
     }
 
+    const bool was_low_battery_latched = low_battery_latched_;
     if (sample.battery_level <= kLowBatteryEnterPercent) {
         low_battery_latched_ = true;
     } else if (sample.battery_level >= kLowBatteryExitPercent) {
@@ -86,6 +87,7 @@ PowerUiDecision PowerUiPolicy::Update(const PowerUiSample& sample) {
             .pet_state = PetState::kLowBattery,
             .override_pet_state = true,
             .allow_autonomous_audio = false,
+            .request_low_battery_voice = !was_low_battery_latched,
         };
     }
     return {};
