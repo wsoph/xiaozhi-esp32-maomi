@@ -799,12 +799,11 @@ class MaomiToolsContractTest(unittest.TestCase):
             r"case maomi::AutonomyAction::kLookAround:\s+return maomi::PetState::kCurious;",
         )
 
-    def test_board_uses_one_owner_approved_meow_for_all_cat_actions(self):
+    def test_board_uses_owner_approved_meow_for_autonomous_cat_actions(self):
         board_source = (
             BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('return "maomi_meow.ogg";', board_source)
         self.assertIn(
             'TryPlayMaomiSound("maomi_meow.ogg", true);', board_source
         )
@@ -812,22 +811,30 @@ class MaomiToolsContractTest(unittest.TestCase):
         self.assertNotIn("maomi_meow_2.ogg", board_source)
         self.assertNotIn("maomi_next_meow_sound_", board_source)
 
-    def test_interactions_are_visible_and_audible_during_continuous_listening(self):
+    def test_interactions_do_not_queue_local_audio_or_extend_their_lifetime(self):
         board_source = (
             BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
         ).read_text(encoding="utf-8")
 
-        self.assertNotIn(
-            "snapshot.paused_by_official_state ||\n"
-            "            snapshot.priority != maomi::PetPriority::kInteraction",
-            board_source,
-        )
-        self.assertIn("AllowsMaomiLocalPresentation", board_source)
-        self.assertIn("DecideInteractionSoundWait(", board_source)
-        self.assertIn("kMaomiInteractionSoundMaxWaitMs", board_source)
+        interaction_handler = board_source.split(
+            "maomi::InteractionToolResult HandleMaomiInteraction", 1
+        )[1].split("maomi::PetToolSnapshot GetMaomiToolSnapshot", 1)[0]
+        interaction_lifetime = board_source.split(
+            "void UpdateMaomiInteractionLifetime", 1
+        )[1].split("maomi::InteractionToolResult HandleMaomiInteraction", 1)[0]
+
+        self.assertNotIn("TryPlayMaomiSound", interaction_handler)
+        self.assertNotIn("sound_queued =", interaction_handler)
+        self.assertNotIn("maomi_pending_interaction_sound_", board_source)
+        self.assertNotIn("DecideInteractionSoundWait", interaction_lifetime)
+        self.assertNotIn("kMaomiInteractionSoundMaxWaitMs", board_source)
         self.assertIn(
-            "maomi_interaction_last_update_ms_ = monotonic_ms;\n            return;",
-            board_source,
+            "maomi_interaction_remaining_ms_ = kMaomiInteractionVisibleDurationMs;",
+            interaction_handler,
+        )
+        self.assertIn(
+            "ReleaseExpression(maomi::PetPriority::kInteraction)",
+            interaction_lifetime,
         )
 
     def test_bond_points_are_saved_as_an_important_write(self):

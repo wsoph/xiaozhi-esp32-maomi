@@ -10,7 +10,6 @@
 #include "maomi_autonomy.h"
 #include "maomi_bond.h"
 #include "maomi_clock.h"
-#include "maomi_interaction_audio_policy.h"
 #include "maomi_pet_core.h"
 #include "maomi_reminders.h"
 #include "maomi_storage.h"
@@ -46,7 +45,6 @@ constexpr uint8_t kMaomiBatteryWarmupSamples = 4;
 constexpr float kHighTemperatureThresholdCelsius = 75.0f;
 constexpr uint32_t kMaomiAutonomyRandomSeed = 0x4D414F4Du;
 constexpr uint64_t kMaomiInteractionVisibleDurationMs = 4'000;
-constexpr uint64_t kMaomiInteractionSoundMaxWaitMs = 15'000;
 constexpr uint64_t kMaomiReminderVisibleDurationMs = 4'000;
 constexpr char kMaomiReminderSoundName[] = "maomi_prompt.ogg";
 
@@ -106,8 +104,6 @@ private:
     uint64_t maomi_interaction_last_update_ms_ = 0;
     uint64_t maomi_reminder_remaining_ms_ = 0;
     uint64_t maomi_reminder_last_update_ms_ = 0;
-    std::optional<maomi::PetAction> maomi_pending_interaction_sound_;
-    uint64_t maomi_pending_interaction_sound_since_ms_ = 0;
     std::string_view last_maomi_display_emotion_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
@@ -193,38 +189,6 @@ private:
         maomi_local_sound_playback_id_ = 0;
         maomi_autonomy_sound_playing_ = false;
         RestoreMaomiVoiceUploadAfterLocalSound();
-    }
-
-    static const char* InteractionSoundName(maomi::PetAction action) {
-        switch (action) {
-            case maomi::PetAction::kPet:
-            case maomi::PetAction::kFeed:
-            case maomi::PetAction::kPlay:
-                return "maomi_meow.ogg";
-        }
-        return nullptr;
-    }
-
-    void TryPlayPendingInteractionSound(const maomi::Snapshot& snapshot) {
-        if (!maomi_pending_interaction_sound_.has_value() ||
-            !maomi::AllowsMaomiLocalPresentation(snapshot.official_state) ||
-            snapshot.priority != maomi::PetPriority::kInteraction) {
-            return;
-        }
-        const auto action = *maomi_pending_interaction_sound_;
-        const bool state_matches =
-            (action == maomi::PetAction::kPet && snapshot.state == maomi::PetState::kBeingPetted) ||
-            (action == maomi::PetAction::kFeed && snapshot.state == maomi::PetState::kEating) ||
-            (action == maomi::PetAction::kPlay && snapshot.state == maomi::PetState::kPlaying);
-        if (!state_matches) {
-            return;
-        }
-        if (TryPlayMaomiSound(InteractionSoundName(action), false)) {
-            maomi_pending_interaction_sound_.reset();
-            maomi_pending_interaction_sound_since_ms_ = 0;
-            maomi_interaction_remaining_ms_ = kMaomiInteractionVisibleDurationMs;
-            maomi_interaction_last_update_ms_ = MonotonicMs();
-        }
     }
 
     maomi::WakePlaybackStart StartMaomiLocalResponse() {
@@ -370,7 +334,6 @@ private:
             last_maomi_display_emotion_ = {};
             return;
         }
-        TryPlayPendingInteractionSound(snapshot);
         if (last_maomi_display_emotion_ == plan.display_emotion) {
             return;
         }
@@ -596,7 +559,6 @@ private:
         const uint64_t monotonic_ms = MonotonicMs();
         ObserveMaomiClockOnMainTask(monotonic_ms);
         const auto pet_snapshot = maomi_pet_core_.GetSnapshot();
-        TryPlayPendingInteractionSound(pet_snapshot);
         UpdateMaomiInteractionLifetime(monotonic_ms, pet_snapshot);
         UpdateMaomiReminderLifetime(monotonic_ms, pet_snapshot);
         HandleMaomiRemindersOnMainTask(monotonic_ms, pet_snapshot);
@@ -632,20 +594,6 @@ private:
         if (!maomi_active_interaction_.has_value()) {
             return;
         }
-        const auto sound_wait = maomi::DecideInteractionSoundWait(
-            maomi_pending_interaction_sound_.has_value(), maomi_pending_interaction_sound_since_ms_,
-            monotonic_ms, kMaomiInteractionSoundMaxWaitMs);
-        if (sound_wait == maomi::InteractionSoundWaitDecision::kKeepWaiting) {
-            maomi_interaction_last_update_ms_ = monotonic_ms;
-            return;
-        }
-        if (sound_wait == maomi::InteractionSoundWaitDecision::kTimedOut) {
-            ESP_LOGW(TAG, "Dropping pending interaction sound after bounded wait");
-            maomi_pending_interaction_sound_.reset();
-            maomi_pending_interaction_sound_since_ms_ = 0;
-            maomi_interaction_last_update_ms_ = monotonic_ms;
-            return;
-        }
         if (monotonic_ms < maomi_interaction_last_update_ms_) {
             maomi_interaction_last_update_ms_ = monotonic_ms;
             return;
@@ -663,8 +611,6 @@ private:
 
         maomi_interaction_remaining_ms_ = 0;
         maomi_active_interaction_.reset();
-        maomi_pending_interaction_sound_.reset();
-        maomi_pending_interaction_sound_since_ms_ = 0;
         maomi_pet_core_.ReleaseExpression(maomi::PetPriority::kInteraction);
     }
 
@@ -700,10 +646,6 @@ private:
         maomi_interaction_remaining_ms_ = kMaomiInteractionVisibleDurationMs;
         maomi_interaction_last_update_ms_ = MonotonicMs();
 
-        const char* sound = InteractionSoundName(action);
-        result.sound_queued = maomi::QueueLatestInteractionSound(
-            HasMaomiSound(sound), action, maomi_interaction_last_update_ms_,
-            maomi_pending_interaction_sound_, maomi_pending_interaction_sound_since_ms_);
         UpdateMaomiAutonomyOnMainTask(maomi::ActivitySource::kPetInteraction);
         return result;
     }

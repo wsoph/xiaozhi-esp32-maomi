@@ -98,12 +98,6 @@ class MaomiHostCppTest(unittest.TestCase):
             [ROOT / "scripts" / "tests" / "sound_playback_limits_test.cc"],
         )
 
-    def test_interaction_audio_policy_contract(self):
-        self.compile_and_run(
-            "maomi-interaction-audio-policy-test",
-            [ROOT / "scripts" / "tests" / "maomi_interaction_audio_policy_test.cc"],
-        )
-
     def test_pet_core_contract(self):
         self.compile_and_run(
             "maomi-pet-core-test",
