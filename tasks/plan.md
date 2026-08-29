@@ -63,3 +63,55 @@
 - ESP-IDF 6.0.2 `ninja -C build-m`：成功生成 `xiaozhi.bin`，应用分区剩余 30%。
 - 当前环境未安装 `clang-format`；已按仓库 100 列规则检查改动行，`git diff --check` 通过，固件以 `-Werror` 编译通过。
 - 未执行刷机。
+
+---
+
+# Implementation Plan: 倒计时抢占提醒与逐秒显示
+
+## Overview
+
+修复倒计时在聆听和说话状态被延迟的问题，并增加不覆盖对话字幕的逐秒倒计时图层。
+
+## Architecture Decisions
+
+- 提醒引擎继续负责到期与非对话忙状态延期；板级策略把聆听、说话识别为可抢占状态。
+- 板级代码先结束当前语音会话，再提交提醒表情；如说话音频仍有尾帧，保留声音待播并在播放空闲后重试。
+- 从提醒列表生成纯数据倒计时视图，选择最先到期项并将毫秒向上取整为秒。
+- LCD 使用独立 LVGL 图层显示倒计时，避免与 AI 字幕互相覆盖。
+
+## Task List
+
+### Phase 1: Contract
+
+- [x] Task C1: 添加倒计时视图选择和板级抢占失败测试
+
+### Phase 2: Runtime
+
+- [x] Task C2: 实现聆听/说话抢占和提醒声音可靠启动
+- [x] Task C3: 实现逐秒倒计时视图和 LCD 独立图层
+
+### Phase 3: Verification
+
+- [x] Task C4: 运行聚焦、全量主机测试和 ESP-IDF 构建
+- [x] Task C5: 复核、记录结果并提交；不刷机、不推送、不合并
+
+## Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| 说话音频重置时仍有尾帧 | 提醒声音首次启动失败 | 将声音保留为待播，在后续 100 ms 轮询中启动 |
+| 多倒计时争用一个图层 | 显示跳动或选择不确定 | 固定选择剩余时间最短、再按 ID 排序 |
+| 对话字幕更新覆盖倒计时 | 用户看不到递减 | 使用独立 LVGL 对象，不调用 `SetChatMessage` |
+| 非对话系统状态被误中断 | 配网或升级异常 | 只抢占 listening/speaking，其他状态沿用忙延期 |
+
+## Open Questions
+
+无。详细行为见 `docs/maomi-countdown-presentation-spec.md`。
+
+## Verification Results
+
+- 2026-08-29：新增测试先在缺少倒计时视图和抢占策略时失败，随后实现通过。
+- `python -m unittest discover -s scripts/tests -v`：114 项通过。
+- ESP-IDF 6.0.2 `ninja -C build-m`：成功生成 `xiaozhi.bin`，应用分区剩余 30%。
+- 固件大小：2,875,776 字节；SHA256：`39D72DEC2E7D323B32BFD9386B0E9325A434D27EACA776BB1C554DD0E33C1DD1`。
+- `git diff --check` 通过；未刷机、未推送、未合并。

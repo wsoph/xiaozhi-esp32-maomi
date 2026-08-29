@@ -173,6 +173,75 @@ void TestCountdownBoundsAndMonotonicClock() {
           maomi::ReminderStatus::kInvalidArgument);
 }
 
+void TestCountdownPresentationSelectsTheNextDueItem() {
+    maomi::ReminderList reminders;
+    reminders.items[0] = {
+        .id = 9,
+        .kind = maomi::ReminderKind::kAlarm,
+        .remaining_ms = 1,
+    };
+    reminders.items[1] = {
+        .id = 7,
+        .kind = maomi::ReminderKind::kCountdown,
+        .remaining_ms = 2001,
+    };
+    reminders.items[2] = {
+        .id = 8,
+        .kind = maomi::ReminderKind::kCountdown,
+        .remaining_ms = 2000,
+    };
+    reminders.count = 3;
+
+    const auto selected = maomi::SelectCountdownPresentation(reminders);
+    CHECK(selected.visible);
+    CHECK(selected.id == 8);
+    CHECK(selected.remaining_seconds == 2);
+
+    reminders.items[1].id = 3;
+    reminders.items[1].remaining_ms = 2000;
+    const auto tie = maomi::SelectCountdownPresentation(reminders);
+    CHECK(tie.id == 3);
+    CHECK(tie.remaining_seconds == 2);
+
+    reminders.items[1].remaining_ms = 0;
+    const auto due = maomi::SelectCountdownPresentation(reminders);
+    CHECK(due.id == 3);
+    CHECK(due.remaining_seconds == 0);
+
+    reminders.count = 1;
+    const auto no_countdown = maomi::SelectCountdownPresentation(reminders);
+    CHECK(!no_countdown.visible);
+    CHECK(no_countdown.id == 0);
+    CHECK(no_countdown.remaining_seconds == 0);
+}
+
+void TestOnlyCountdownsCanBypassConversationBusyDeferral() {
+    Fixture fixture;
+    const auto countdown = fixture.engine.StartCountdown(1, "conversation", Clock(0));
+    const auto countdown_due = fixture.engine.Update({
+        .clock = Clock(1000),
+        .device_busy = true,
+        .allow_countdown_busy_preemption = true,
+    });
+    CHECK(countdown_due.state == maomi::ReminderEventState::kTriggered);
+    CHECK(countdown_due.id == countdown.id);
+
+    const auto alarm = fixture.engine.SetAlarm({2028, 3, 1, 8, 0, 1}, "alarm",
+                                               Clock(0, {2028, 3, 1, 8, 0, 0}, true));
+    CHECK(alarm.status == maomi::ReminderStatus::kAccepted);
+    CHECK(fixture.engine
+              .Update({
+                  .clock = Clock(2000, {2028, 3, 1, 8, 0, 1}, true),
+                  .device_busy = true,
+                  .allow_countdown_busy_preemption = true,
+              })
+              .state == maomi::ReminderEventState::kNone);
+    const auto alarm_after_conversation = fixture.engine.Update(
+        Tick(maomi::kImportantCommitIntervalMs, {2028, 3, 1, 8, 0, 10}, true));
+    CHECK(alarm_after_conversation.state == maomi::ReminderEventState::kTriggered);
+    CHECK(alarm_after_conversation.id == alarm.id);
+}
+
 void TestAlarmDateValidationAndTrustedTime() {
     Fixture fixture;
     const auto trusted_now = Clock(0, {2028, 2, 28, 8, 0, 0}, true);
@@ -635,6 +704,8 @@ void TestAllReminderKindsMapToBoundedLocalPresentation() {
 
 int main() {
     TestCountdownBoundsAndMonotonicClock();
+    TestCountdownPresentationSelectsTheNextDueItem();
+    TestOnlyCountdownsCanBypassConversationBusyDeferral();
     TestAlarmDateValidationAndTrustedTime();
     TestPomodoroAlternatesAndStopsAfterCycles();
     TestRestartRestoresOnlyPersistentPlans();

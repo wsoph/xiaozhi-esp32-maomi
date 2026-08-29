@@ -153,6 +153,33 @@ ReminderPresentationDecision DecideReminderPresentation(const ReminderEvent& eve
     return {};
 }
 
+CountdownPresentation SelectCountdownPresentation(const ReminderList& reminders) {
+    const ReminderSnapshot* selected = nullptr;
+    const size_t count = std::min(reminders.count, reminders.items.size());
+    for (size_t index = 0; index < count; ++index) {
+        const auto& item = reminders.items[index];
+        if (item.kind != ReminderKind::kCountdown ||
+            (selected != nullptr &&
+             (item.remaining_ms > selected->remaining_ms ||
+              (item.remaining_ms == selected->remaining_ms && item.id >= selected->id)))) {
+            continue;
+        }
+        selected = &item;
+    }
+    if (selected == nullptr) {
+        return {};
+    }
+
+    const uint64_t seconds = selected->remaining_ms / 1000 +
+                             (selected->remaining_ms % 1000 == 0 ? 0 : 1);
+    return {
+        .visible = true,
+        .id = selected->id,
+        .remaining_seconds = static_cast<uint32_t>(std::min<uint64_t>(
+            seconds, std::numeric_limits<uint32_t>::max())),
+    };
+}
+
 ReminderResult ReminderEngine::StartCountdown(uint32_t duration_seconds, std::string_view label,
                                               const ClockSnapshot& clock) {
     if (duration_seconds < 1 || duration_seconds > 86400) {
@@ -793,7 +820,10 @@ ReminderEvent ReminderEngine::Update(const ReminderTick& tick) {
         const bool expired =
             tick.clock.monotonic_ms >= entry.pending_since_ms &&
             tick.clock.monotonic_ms - entry.pending_since_ms >= kMaximumBusyDeferralMs;
-        if (tick.device_busy && !expired) {
+        const bool countdown_can_preempt =
+            tick.allow_countdown_busy_preemption &&
+            entry.snapshot.kind == ReminderKind::kCountdown;
+        if (tick.device_busy && !expired && !countdown_can_preempt) {
             continue;
         }
         return FinishDue(&entry, tick, expired);

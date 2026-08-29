@@ -137,6 +137,17 @@ class MaomiHostCppTest(unittest.TestCase):
             ],
         )
 
+    def test_reminders_and_clock_contract(self):
+        self.compile_and_run(
+            "maomi-reminders-clock-test",
+            [
+                ROOT / "scripts" / "tests" / "maomi_reminders_clock_test.cc",
+                BOARD / "maomi_reminders.cc",
+                BOARD / "maomi_clock.cc",
+                BOARD / "maomi_storage.cc",
+            ],
+        )
+
     def test_ui_mapping_contract(self):
         self.compile_and_run(
             "maomi-ui-test",

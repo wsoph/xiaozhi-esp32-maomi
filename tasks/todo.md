@@ -62,3 +62,59 @@
 - [x] 检查暂存差异中无密钥和无生成目录
 
 **Dependencies:** Tasks 3–4
+
+---
+
+# 倒计时抢占提醒与逐秒显示任务
+
+## Task C1: 行为契约测试
+
+**Acceptance criteria:**
+- [x] 覆盖最先到期倒计时、毫秒向上取整、相同时间按 ID 选择和无倒计时隐藏
+- [x] 覆盖聆听与说话均不进入忙延期，并执行不同的会话终止动作
+- [x] 覆盖提醒声音因说话尾帧暂不可播时的后续重试
+
+**Verification:**
+- [x] 新测试在实现前失败
+
+**Dependencies:** None
+
+## Task C2: 到点抢占语音会话
+
+**Acceptance criteria:**
+- [x] 聆听中到点停止语音上传和本轮聆听
+- [x] 说话中到点中止回复、清空播放并切回待命
+- [x] 动画立即提交，声音在播放空闲后可靠启动
+
+**Verification:**
+- [x] 板级契约测试通过
+- [x] 既有提醒调度 C++ 测试通过
+
+**Dependencies:** Task C1
+
+## Task C3: 逐秒倒计时图层
+
+**Acceptance criteria:**
+- [x] 创建成功后立即显示初始秒数
+- [x] 秒数按向上取整逐秒递减，到点显示 0
+- [x] 独立图层不覆盖 AI 对话字幕；取消或结束后隐藏/切换
+
+**Verification:**
+- [x] 倒计时视图 C++ 测试通过
+- [x] LCD 和板级静态契约测试通过
+
+**Dependencies:** Task C1
+
+## Task C4: 最终验证与提交
+
+**Acceptance criteria:**
+- [x] 聚焦及全量主机测试通过
+- [x] ESP-IDF 6.0.2 固件编译成功
+- [x] 差异只包含本功能；未跟踪构建目录保持原样
+- [x] 未刷机、未推送、未合并
+
+**Verification:**
+- [x] `git diff --check` 通过
+- [x] 记录测试、构建和固件校验值
+
+**Dependencies:** Tasks C2–C3

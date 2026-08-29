@@ -848,6 +848,66 @@ class MaomiToolsContractTest(unittest.TestCase):
             "ReleaseExpression(maomi::PetPriority::kReminder)", board_source
         )
 
+    def test_countdown_preempts_listening_and_speaking_with_retryable_sound(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        self.assertRegex(
+            board_source,
+            r"(?s)IsMaomiConversationState\(DeviceState state\).*?"
+            r"kDeviceStateListening.*?kDeviceStateSpeaking",
+        )
+        self.assertIn("const bool conversation_active =", board_source)
+        self.assertIn(
+            ".allow_countdown_busy_preemption = conversation_active", board_source
+        )
+
+        preemption = board_source.split(
+            "void PreemptMaomiConversationForReminder", 1
+        )[1].split("void TryStartPendingMaomiReminderSound", 1)[0]
+        self.assertIn("app.StopListening();", preemption)
+        self.assertIn("StopMaomiVoiceUpload();", preemption)
+        self.assertIn("app.AbortSpeaking(kAbortReasonNone);", preemption)
+        self.assertIn("audio_service.ResetDecoder();", preemption)
+        self.assertIn("app.SetDeviceState(kDeviceStateIdle);", preemption)
+        self.assertIn(
+            "Event::OfficialStateChanged(kDeviceStateIdle)", preemption
+        )
+
+        sound_retry = board_source.split(
+            "void TryStartPendingMaomiReminderSound", 1
+        )[1].split("void UpdateMaomiCountdownDisplay", 1)[0]
+        self.assertIn("maomi_reminder_sound_pending_", sound_retry)
+        self.assertIn("IsPlaybackIdle()", sound_retry)
+        self.assertIn("TryPlayMaomiSound(kMaomiReminderSoundName, false)", sound_retry)
+
+    def test_countdown_uses_an_independent_per_second_display_layer(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+        display_source = (
+            BOARD / "maomi_lcd_display.h"
+        ).read_text(encoding="utf-8")
+
+        countdown_update = board_source.split(
+            "void UpdateMaomiCountdownDisplay", 1
+        )[1].split("void HandleMaomiRemindersOnMainTask", 1)[0]
+        self.assertIn("SelectCountdownPresentation", countdown_update)
+        self.assertIn("SetCountdownSeconds", countdown_update)
+        self.assertIn("maomi_countdown_due_id_", countdown_update)
+        self.assertNotIn("SetChatMessage", countdown_update)
+
+        start_countdown = board_source.split(
+            "reminder_dependencies.start_countdown", 1
+        )[1].split("reminder_dependencies.set_alarm", 1)[0]
+        self.assertIn("UpdateMaomiCountdownDisplay(monotonic_ms);", start_countdown)
+
+        self.assertIn("void SetupUI() override", display_source)
+        self.assertIn("void SetCountdownSeconds(int32_t seconds)", display_source)
+        self.assertIn("countdown_popup_", display_source)
+        self.assertIn("countdown_label_", display_source)
+
     def test_board_starts_voice_games_through_one_play_interaction(self):
         board_source = (
             BOARD / "zhengchen-1.54tft-wifi-maomi.cc"

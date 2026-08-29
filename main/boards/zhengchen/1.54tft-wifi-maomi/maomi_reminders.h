@@ -89,6 +89,7 @@ struct ReminderList {
 struct ReminderTick {
     ClockSnapshot clock;
     bool device_busy = false;
+    bool allow_countdown_busy_preemption = false;
     bool low_battery = false;
 };
 
@@ -106,10 +107,21 @@ struct ReminderPresentationDecision {
     bool play_sound = false;
 };
 
+struct CountdownPresentation {
+    bool visible = false;
+    uint16_t id = 0;
+    uint32_t remaining_seconds = 0;
+};
+
 // Converts a scheduler event into bounded local output. Critical system alerts suppress sound;
 // missed and quiet-hour events remain visible without becoming audible.
 ReminderPresentationDecision DecideReminderPresentation(const ReminderEvent& event,
                                                         bool critical_alert);
+
+// Selects the next countdown for the always-visible screen overlay. Remaining milliseconds are
+// rounded up so a newly created N-second countdown starts at N and never displays the next second
+// early.
+CountdownPresentation SelectCountdownPresentation(const ReminderList& reminders);
 
 // Main-task-owned, fixed-capacity reminder scheduler. External callbacks must schedule all
 // mutations onto the application main task before calling this class.
