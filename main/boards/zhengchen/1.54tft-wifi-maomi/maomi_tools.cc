@@ -26,53 +26,79 @@ PetAction ParseAction(const std::string& action) {
 }
 
 VoiceGame ParseVoiceGame(const std::string& game) {
-    if (game == "no_yes_no") {
-        return VoiceGame::kNoYesNo;
-    }
     if (game == "cat_guess") {
         return VoiceGame::kCatGuess;
     }
     if (game == "mini_adventure") {
         return VoiceGame::kMiniAdventure;
     }
+    if (game == "story_chain") {
+        return VoiceGame::kStoryChain;
+    }
+    if (game == "cat_detective") {
+        return VoiceGame::kCatDetective;
+    }
+    if (game == "memory_suitcase") {
+        return VoiceGame::kMemorySuitcase;
+    }
+    if (game == "quick_quiz") {
+        return VoiceGame::kQuickQuiz;
+    }
     throw std::runtime_error(
-        "Unsupported voice game; allowed values are no_yes_no, cat_guess, and mini_adventure");
+        "Unsupported voice game; allowed values are cat_guess, mini_adventure, story_chain, "
+        "cat_detective, memory_suitcase, and quick_quiz");
 }
 
 const char* VoiceGameText(VoiceGame game) {
     switch (game) {
-        case VoiceGame::kNoYesNo:
-            return "no_yes_no";
         case VoiceGame::kCatGuess:
             return "cat_guess";
         case VoiceGame::kMiniAdventure:
             return "mini_adventure";
+        case VoiceGame::kStoryChain:
+            return "story_chain";
+        case VoiceGame::kCatDetective:
+            return "cat_detective";
+        case VoiceGame::kMemorySuitcase:
+            return "memory_suitcase";
+        case VoiceGame::kQuickQuiz:
+            return "quick_quiz";
     }
     return nullptr;
 }
 
 uint8_t VoiceGameRoundLimit(VoiceGame game) {
     switch (game) {
-        case VoiceGame::kNoYesNo:
-            return 5;
         case VoiceGame::kCatGuess:
             return 8;
         case VoiceGame::kMiniAdventure:
             return 4;
+        case VoiceGame::kStoryChain:
+            return 6;
+        case VoiceGame::kCatDetective:
+            return 6;
+        case VoiceGame::kMemorySuitcase:
+            return 8;
+        case VoiceGame::kQuickQuiz:
+            return 6;
     }
     return 0;
 }
 
 const char* VoiceGameInstruction(VoiceGame game) {
     switch (game) {
-        case VoiceGame::kNoYesNo:
-            return "先用一句话说明不能明确用是或不是作答，立即提出第1个轻松问题。"
-                   "最多5个玩家回答回合；玩家明确用是或不是作答时结束，否则第5回合后宣布玩家"
-                   "获胜。不要误判其他词里的同音或单字。";
         case VoiceGame::kCatGuess:
             return "请玩家在心里想一个常见动物、食物或物品，想好后说想好了。收到确认后逐个提问，最多8问；第8问后必须给出最终猜测。玩家提前揭晓时自然收尾。";
         case VoiceGame::kMiniAdventure:
             return "用一两句话创建轻松安全的冒险并给出第1次选择。每次根据玩家行动推进剧情并给2到3个选择，也接受自由行动；第4次行动后给出完整结局。";
+        case VoiceGame::kStoryChain:
+            return "先说一两句轻松安全的故事开头，请玩家续写一两句。每轮承接玩家内容再续写一两句；玩家第6次续写后给故事一个完整有趣的结尾，不再开启新情节。";
+        case VoiceGame::kCatDetective:
+            return "创建一个生活化、安全且答案明确的小谜案，先给第1条线索并请玩家推理。全局安排3条核心线索，最多2次提示；最多6个玩家推理回合，第6回合后揭晓答案并解释线索。";
+        case VoiceGame::kMemorySuitcase:
+            return "先说旅行箱里装入1件常见物品，请玩家按顺序复述全部物品并新增1件。每轮先核对再完整复述新清单；说错时温和揭晓，清单达到8件物品时祝贺并结束。";
+        case VoiceGame::kQuickQuiz:
+            return "进行6道轻松快问快答，每次只出1题，可混合兴趣、常识和简单学习题，并根据表现微调难度。每题作答后立即简短反馈并出下一题；第6题后报出成绩并结束。";
     }
     return nullptr;
 }
@@ -571,9 +597,10 @@ void RegisterPetTools(McpServer& server, PetToolDependencies dependencies) {
     server.AddTool(
         kPetStartGameToolName,
         "当主人说陪我玩、我们一起玩或明确要玩语言游戏时必须调用。game 只能是 "
-        "no_yes_no、cat_guess、mini_adventure；未指定游戏时优先选择 no_yes_no。成功后按返回的 "
-        "instruction 进行1到3分钟的对话游戏，一局内不得再次调用。主人说结束游戏、不玩了或同义表达时"
-        "立即结束，不继续追问。普通摸摸、喂食或只播放玩耍动画仍使用 self.pet.interact。",
+        "cat_guess、mini_adventure、story_chain、cat_detective、memory_suitcase、quick_quiz；"
+        "未指定时从六种中选择并尽量避免连续重复。成功后按返回的 instruction 进行1到3分钟的"
+        "对话游戏，一局内不得再次调用。主人说结束游戏、不玩了或同义表达时立即结束，不继续追问。"
+        "普通摸摸、喂食或只播放玩耍动画仍使用 self.pet.interact。",
         PropertyList({Property("game", kPropertyTypeString)}),
         [start_game = std::move(start_game)](const PropertyList& properties) -> ReturnValue {
             if (!start_game) {

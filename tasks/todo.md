@@ -118,3 +118,26 @@
 - [x] 记录测试、构建和固件校验值
 
 **Dependencies:** Tasks C2–C3
+
+---
+
+# 语音互动游戏扩展任务
+
+## Task G1: 游戏契约
+
+**Acceptance criteria:**
+- [x] `no_yes_no` 不再出现在工具说明中并被明确拒绝
+- [x] 故事接龙、猫咪小侦探、记忆旅行箱和快问快答均有稳定标识及结束边界
+- [x] 猫咪猜心和三分钟冒险保持可用
+
+**Verification:**
+- [x] 新契约测试在实现前失败
+- [x] 实现后聚焦契约测试通过
+
+## Task G2: 最终验证
+
+**Acceptance criteria:**
+- [x] 全量主机测试通过
+- [x] C/C++ 格式及差异检查通过（环境无 `clang-format`；由 `git diff --check`、人工复核和 `-Werror` 编译覆盖）
+- [x] ESP-IDF 固件编译成功
+- [x] 未刷机、未推送、未合并，现有构建目录原样保留

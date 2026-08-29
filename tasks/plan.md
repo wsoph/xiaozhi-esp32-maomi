@@ -66,6 +66,41 @@
 
 ---
 
+# Implementation Plan: 语音互动游戏扩展
+
+## Overview
+
+根据真机体验移除“不许说是/不是”，并把已记录的故事接龙、猫咪小侦探、记忆旅行箱和快问快答加入现有 `self.pet.start_game` 工具。
+
+## Architecture Decisions
+
+- 继续使用单一开局工具和联网 AI 对话状态，不在设备端增加六套状态机。
+- 六种游戏共享一次玩耍动画和一次亲密度记录，游戏后续回合不重复调用设备工具。
+- 每款游戏在返回指令里写明 1–3 分钟内可执行的硬性结束边界。
+- 删除 `no_yes_no` 的枚举、解析、工具描述和返回指令，旧标识明确报错。
+
+## Task List
+
+- [x] 用契约测试定义四种新增游戏和旧游戏删除行为
+- [x] 确认测试在现有实现上失败
+- [x] 扩展游戏枚举、解析、回合上限和联网 AI 指令
+- [x] 更新语音游戏产品及接口文档
+- [x] 运行聚焦及全量主机测试
+- [x] 运行格式检查和 ESP-IDF 固件编译
+- [x] 复核差异并记录结果；不刷机、不推送、不合并
+
+## Verification Results
+
+- 2026-08-29：新增契约测试先因缺少四种新游戏枚举而失败，随后实现通过。
+- `python -m unittest scripts.tests.test_maomi_tools -v`：9 项通过。
+- `python -m unittest discover -s scripts/tests -v`：114 项通过。
+- ESP-IDF 6.0.2 `ninja -C build-m`：成功，应用分区剩余 28%。
+- 固件大小：2,975,056 字节；SHA256：`3A648C6A01B0D61EB74DC57A64972D3F55AC84B86DA3FB5ACCAAA1CC9E0D4BA2`。
+- 当前环境没有 `clang-format`；`git diff --check` 通过，固件以 `-Werror` 编译通过。
+- 未修改正式倒计时界面；未刷机、未提交、未推送、未合并。
+
+---
+
 # Implementation Plan: 倒计时抢占提醒与逐秒显示
 
 ## Overview

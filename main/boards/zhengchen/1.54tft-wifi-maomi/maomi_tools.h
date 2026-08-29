@@ -30,9 +30,12 @@ enum class PetAction : uint8_t {
 };
 
 enum class VoiceGame : uint8_t {
-    kNoYesNo,
     kCatGuess,
     kMiniAdventure,
+    kStoryChain,
+    kCatDetective,
+    kMemorySuitcase,
+    kQuickQuiz,
 };
 
 enum class ToolOperationState : uint8_t {

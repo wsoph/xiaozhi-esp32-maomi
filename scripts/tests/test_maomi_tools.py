@@ -250,9 +250,13 @@ void AssertSchema(const McpServer& server) {
     assert(!interact.description.empty());
     assert(start_game.description.find("陪我玩") != std::string::npos);
     assert(start_game.description.find("结束游戏") != std::string::npos);
-    assert(start_game.description.find("no_yes_no") != std::string::npos);
+    assert(start_game.description.find("no_yes_no") == std::string::npos);
     assert(start_game.description.find("cat_guess") != std::string::npos);
     assert(start_game.description.find("mini_adventure") != std::string::npos);
+    assert(start_game.description.find("story_chain") != std::string::npos);
+    assert(start_game.description.find("cat_detective") != std::string::npos);
+    assert(start_game.description.find("memory_suitcase") != std::string::npos);
+    assert(start_game.description.find("quick_quiz") != std::string::npos);
     assert(!status.description.empty());
     assert(!quiet.description.empty());
 
@@ -419,8 +423,12 @@ int main() {
     };
     dependencies.start_game = [&game_starts, &reject_interactions](maomi::VoiceGame game) {
         ++game_starts;
-        assert(game == maomi::VoiceGame::kNoYesNo || game == maomi::VoiceGame::kCatGuess ||
-               game == maomi::VoiceGame::kMiniAdventure);
+        assert(game == maomi::VoiceGame::kCatGuess ||
+               game == maomi::VoiceGame::kMiniAdventure ||
+               game == maomi::VoiceGame::kStoryChain ||
+               game == maomi::VoiceGame::kCatDetective ||
+               game == maomi::VoiceGame::kMemorySuitcase ||
+               game == maomi::VoiceGame::kQuickQuiz);
         maomi::InteractionToolResult result;
         result.state = reject_interactions ? maomi::ToolOperationState::kRejected
                                            : maomi::ToolOperationState::kQueued;
@@ -562,15 +570,18 @@ int main() {
     reject_interactions = false;
     assert(interactions == 4);
 
-    const auto no_yes_no = server.Invoke(
-        maomi::kPetStartGameToolName, {{"game", std::string("no_yes_no")}});
     const auto cat_guess = server.Invoke(
         maomi::kPetStartGameToolName, {{"game", std::string("cat_guess")}});
     const auto mini_adventure = server.Invoke(
         maomi::kPetStartGameToolName, {{"game", std::string("mini_adventure")}});
-    assert(no_yes_no.find("\"game\":\"no_yes_no\"") != std::string::npos);
-    assert(no_yes_no.find("\"round_limit\":5") != std::string::npos);
-    assert(no_yes_no.find("第5回合") != std::string::npos);
+    const auto story_chain = server.Invoke(
+        maomi::kPetStartGameToolName, {{"game", std::string("story_chain")}});
+    const auto cat_detective = server.Invoke(
+        maomi::kPetStartGameToolName, {{"game", std::string("cat_detective")}});
+    const auto memory_suitcase = server.Invoke(
+        maomi::kPetStartGameToolName, {{"game", std::string("memory_suitcase")}});
+    const auto quick_quiz = server.Invoke(
+        maomi::kPetStartGameToolName, {{"game", std::string("quick_quiz")}});
     assert(cat_guess.find("\"game\":\"cat_guess\"") != std::string::npos);
     assert(cat_guess.find("\"round_limit\":8") != std::string::npos);
     assert(cat_guess.find("第8问") != std::string::npos);
@@ -579,22 +590,35 @@ int main() {
     assert(mini_adventure.find("第4次行动") != std::string::npos);
     assert(mini_adventure.find("\"presentation\":\"play\"") != std::string::npos);
     assert(mini_adventure.find("\"points_added\":3") != std::string::npos);
-    assert(game_starts == 3);
+    assert(story_chain.find("\"game\":\"story_chain\"") != std::string::npos);
+    assert(story_chain.find("\"round_limit\":6") != std::string::npos);
+    assert(story_chain.find("第6次续写") != std::string::npos);
+    assert(cat_detective.find("\"game\":\"cat_detective\"") != std::string::npos);
+    assert(cat_detective.find("\"round_limit\":6") != std::string::npos);
+    assert(cat_detective.find("3条核心线索") != std::string::npos);
+    assert(cat_detective.find("最多2次提示") != std::string::npos);
+    assert(memory_suitcase.find("\"game\":\"memory_suitcase\"") != std::string::npos);
+    assert(memory_suitcase.find("\"round_limit\":8") != std::string::npos);
+    assert(memory_suitcase.find("8件物品") != std::string::npos);
+    assert(quick_quiz.find("\"game\":\"quick_quiz\"") != std::string::npos);
+    assert(quick_quiz.find("\"round_limit\":6") != std::string::npos);
+    assert(quick_quiz.find("第6题") != std::string::npos);
+    assert(game_starts == 6);
 
     ExpectError([&server]() { server.Invoke(maomi::kPetStartGameToolName); });
     ExpectError([&server]() {
         server.Invoke(maomi::kPetStartGameToolName, {{"game", true}});
     });
     ExpectError([&server]() {
-        server.Invoke(maomi::kPetStartGameToolName, {{"game", std::string("story_chain")}});
+        server.Invoke(maomi::kPetStartGameToolName, {{"game", std::string("no_yes_no")}});
     });
-    assert(game_starts == 3);
+    assert(game_starts == 6);
     reject_interactions = true;
     ExpectError([&server]() {
         server.Invoke(maomi::kPetStartGameToolName, {{"game", std::string("cat_guess")}});
     });
     reject_interactions = false;
-    assert(game_starts == 4);
+    assert(game_starts == 7);
 
     const auto status = server.Invoke(maomi::kPetStatusToolName);
     assert(status.find("\"name\":\"小猫咪\"") != std::string::npos);
@@ -723,7 +747,7 @@ int main() {
     });
     ExpectError([&unavailable_server]() {
         unavailable_server.Invoke(maomi::kPetStartGameToolName,
-                                  {{"game", std::string("no_yes_no")}});
+                                  {{"game", std::string("story_chain")}});
     });
     ExpectError([&unavailable_server]() {
         unavailable_server.Invoke(maomi::kPetStatusToolName);
@@ -907,6 +931,37 @@ class MaomiToolsContractTest(unittest.TestCase):
         self.assertIn("void SetCountdownSeconds(int32_t seconds)", display_source)
         self.assertIn("countdown_popup_", display_source)
         self.assertIn("countdown_label_", display_source)
+        self.assertIn("lv_obj_set_size(countdown_popup_, LV_HOR_RES, LV_VER_RES)", display_source)
+        self.assertIn('"%02ld:%02ld:%02ld"', display_source)
+        self.assertIn("lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN)", display_source)
+        self.assertIn("lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN)", display_source)
+        self.assertIn("lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN)", display_source)
+
+    def test_countdown_uses_the_approved_earless_orange_cat_face_frame(self):
+        display_source = (
+            BOARD / "maomi_lcd_display.h"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("SetupCountdownCatFaceFrame()", display_source)
+        self.assertIn("kCountdownFurColor = 0xFFB85C", display_source)
+        self.assertIn("kCountdownLightFurColor = 0xFFD39A", display_source)
+        self.assertIn("kCountdownPaleFurColor = 0xFFF1DC", display_source)
+        self.assertIn("kCountdownStripeColor = 0xD97832", display_source)
+        self.assertIn("kCountdownNoseColor = 0xF49AB5", display_source)
+        self.assertIn("kCountdownInkColor = 0x17151E", display_source)
+        self.assertIn(
+            "CreateCountdownShape(-20, 138, 70, 54, kCountdownFurColor, 27)",
+            display_source,
+        )
+        self.assertIn(
+            "CreateCountdownShape(-12, 146, 48, 38, kCountdownLightFurColor, 19)",
+            display_source,
+        )
+        self.assertIn(
+            "lv_obj_align(countdown_label_, LV_ALIGN_CENTER, 0, -4)",
+            display_source,
+        )
+        self.assertNotIn("countdown_ear", display_source)
 
     def test_board_starts_voice_games_through_one_play_interaction(self):
         board_source = (
