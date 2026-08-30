@@ -1048,6 +1048,12 @@ private:
             GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume / 10));
         });
 
+        volume_up_button_.OnDoubleClick([this]() {
+            power_save_timer_->WakeUp();
+            Application::GetInstance().Schedule(
+                [this]() { HandleMaomiInteraction(maomi::PetAction::kPet); });
+        });
+
         volume_up_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
             ScheduleMaomiActivity(maomi::ActivitySource::kButton);

@@ -993,6 +993,30 @@ class MaomiToolsContractTest(unittest.TestCase):
             r"case maomi::AutonomyAction::kLookAround:\s+return maomi::PetState::kCurious;",
         )
 
+    def test_volume_up_double_click_schedules_pet_without_changing_volume(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        volume_up_handlers = board_source.split(
+            "volume_up_button_.OnClick", 1
+        )[1].split("volume_down_button_.OnClick", 1)[0]
+        self.assertIn("volume_up_button_.OnDoubleClick([this]()", volume_up_handlers)
+
+        double_click_handler = volume_up_handlers.split(
+            "volume_up_button_.OnDoubleClick", 1
+        )[1].split("volume_up_button_.OnLongPress", 1)[0]
+        self.assertIn("power_save_timer_->WakeUp();", double_click_handler)
+        self.assertRegex(
+            double_click_handler,
+            r"Application::GetInstance\(\)\.Schedule\(\s*\[this\]\(\)",
+        )
+        self.assertIn(
+            "HandleMaomiInteraction(maomi::PetAction::kPet);",
+            double_click_handler,
+        )
+        self.assertNotIn("SetOutputVolume", double_click_handler)
+
     def test_board_uses_owner_approved_meow_for_autonomous_cat_actions(self):
         board_source = (
             BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
