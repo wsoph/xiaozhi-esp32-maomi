@@ -1,0 +1,187 @@
+{
+    "schema_version": 1,
+    "board": "zhengchen-1.54tft-wifi-maomi",
+    "wake_word": {
+        "model": "mn7_cn",
+        "command": "mao mi guo lai",
+        "display": "猫咪过来",
+        "threshold": 0.2
+    },
+    "font": {
+        "builtin": "font_noto_sans_basic_20_4",
+        "file": "font_noto_sans_common_20_4.bin",
+        "bundle": "noto-v1"
+    },
+    "fallback_emoji": {
+        "collection": "noto-color-emoji_64",
+        "files": [
+            "angry.png",
+            "confident.png",
+            "confused.png",
+            "cool.png",
+            "crying.png",
+            "delicious.png",
+            "embarrassed.png",
+            "funny.png",
+            "happy.png",
+            "kissy.png",
+            "laughing.png",
+            "loving.png",
+            "neutral.png",
+            "relaxed.png",
+            "sad.png",
+            "shocked.png",
+            "silly.png",
+            "sleepy.png",
+            "surprised.png",
+            "thinking.png",
+            "winking.png"
+        ]
+    },
+    "extra_files": [
+        {
+            "file": "angry.png",
+            "required": true
+        },
+        {
+            "file": "confident.png",
+            "required": true
+        },
+        {
+            "file": "confused.png",
+            "required": true
+        },
+        {
+            "file": "cool.png",
+            "required": true
+        },
+        {
+            "file": "crying.png",
+            "required": true
+        },
+        {
+            "file": "delicious.png",
+            "required": true
+        },
+        {
+            "file": "embarrassed.png",
+            "required": true
+        },
+        {
+            "file": "funny.png",
+            "required": true
+        },
+        {
+            "file": "happy.png",
+            "required": true
+        },
+        {
+            "file": "kissy.png",
+            "required": true
+        },
+        {
+            "file": "laughing.png",
+            "required": true
+        },
+        {
+            "file": "loving.png",
+            "required": true
+        },
+        {
+            "file": "neutral.png",
+            "required": true
+        },
+        {
+            "file": "relaxed.png",
+            "required": true
+        },
+        {
+            "file": "sad.png",
+            "required": true
+        },
+        {
+            "file": "shocked.png",
+            "required": true
+        },
+        {
+            "file": "silly.png",
+            "required": true
+        },
+        {
+            "file": "sleepy.png",
+            "required": true
+        },
+        {
+            "file": "surprised.png",
+            "required": true
+        },
+        {
+            "file": "thinking.png",
+            "required": true
+        },
+        {
+            "file": "winking.png",
+            "required": true
+        },
+        {
+            "file": "maomi_blink.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_charge.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_eat.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_look.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_low_battery.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_listening.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_pet.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_play.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_reminder.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_sleep.gif",
+            "required": true
+        },
+        {
+            "file": "maomi_low_battery_voice.ogg",
+            "required": true
+        },
+        {
+            "file": "maomi_meow.ogg",
+            "required": true
+        },
+        {
+            "file": "maomi_prompt.ogg",
+            "required": true
+        },
+        {
+            "file": "maomi_wake.ogg",
+            "required": true
+        }
+    ],
+    "capacity": {
+        "partition_size_bytes": 8388608,
+        "minimum_free_percent": 10
+    }
+}

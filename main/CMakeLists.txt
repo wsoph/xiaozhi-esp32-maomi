@@ -736,6 +736,16 @@ elseif(CONFIG_BOARD_TYPE_ZHENGCHEN_1_54TFT_WIFI)
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+elseif(CONFIG_BOARD_TYPE_ZHENGCHEN_1_54TFT_WIFI_MAOMI)
+    set(BOARD_DIR "zhengchen/1.54tft-wifi-maomi")
+    set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
+    set(BUILTIN_ICON_FONT font_material_symbols_20_4)
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+    set(MAOMI_ASSETS_EXTRA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/assets-extra")
+    set(MAOMI_ASSETS_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/assets-manifest.json")
+    set(MAOMI_ASSETS_VALIDATOR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/validate_assets.py")
+    set(DEFAULT_ASSETS_EXTRA_FILES "${MAOMI_ASSETS_EXTRA_DIR}")
+    set(MAOMI_INDEX_EXTRA_IMAGES ON)
 elseif(CONFIG_BOARD_TYPE_MINSI_K08_DUAL)
     set(BOARD_DIR "minsi-k08-dual")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
@@ -1144,6 +1154,40 @@ if(NOTO_FONTS_COMPONENT_PATH)
     set(NOTO_FONTS_PATH "${NOTO_FONTS_COMPONENT_PATH}")
 endif()
 
+if(CONFIG_BOARD_TYPE_ZHENGCHEN_1_54TFT_WIFI_MAOMI)
+    set(MAOMI_ASSETS_VALIDATOR_ARGS
+        "--manifest" "${MAOMI_ASSETS_MANIFEST}"
+        "--esp-sr-model-path" "${ESP_SR_MODEL_PATH}"
+        "--noto-fonts-path" "${NOTO_FONTS_PATH}"
+        "--extra-files" "${MAOMI_ASSETS_EXTRA_DIR}"
+    )
+    execute_process(
+        COMMAND python "${MAOMI_ASSETS_VALIDATOR}" ${MAOMI_ASSETS_VALIDATOR_ARGS}
+        RESULT_VARIABLE MAOMI_ASSETS_VALIDATION_RESULT
+        OUTPUT_VARIABLE MAOMI_ASSETS_VALIDATION_OUTPUT
+        ERROR_VARIABLE MAOMI_ASSETS_VALIDATION_ERROR
+    )
+    if(NOT MAOMI_ASSETS_VALIDATION_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Maomi assets source validation failed:\n"
+            "${MAOMI_ASSETS_VALIDATION_OUTPUT}${MAOMI_ASSETS_VALIDATION_ERROR}"
+        )
+    endif()
+    string(STRIP "${MAOMI_ASSETS_VALIDATION_OUTPUT}" MAOMI_ASSETS_VALIDATION_OUTPUT)
+    message(STATUS "${MAOMI_ASSETS_VALIDATION_OUTPUT}")
+
+    set(MAOMI_MODEL_DIR "${ESP_SR_MODEL_PATH}/multinet_model/mn7_cn")
+    file(GLOB_RECURSE MAOMI_MODEL_FILES CONFIGURE_DEPENDS
+        "${MAOMI_MODEL_DIR}/*"
+    )
+    set(MAOMI_ASSETS_SOURCE_DEPENDENCIES
+        "${MAOMI_ASSETS_MANIFEST}"
+        "${MAOMI_ASSETS_VALIDATOR}"
+        "${MAOMI_MODEL_DIR}"
+        ${MAOMI_MODEL_FILES}
+    )
+endif()
+
 if(CONFIG_BOARD_TYPE_ESP_VOCAT)
     find_component_by_pattern("esp_emote_assets" EMOTE_ASSETS_COMPONENT EMOTE_ASSETS_PATH)
     if(EMOTE_ASSETS_PATH)
@@ -1217,6 +1261,7 @@ function(build_default_assets_bin)
     set(DEFAULT_ASSETS_DEPENDENCIES
         "${SDKCONFIG}"
         "${PROJECT_DIR}/scripts/build_default_assets.py"
+        ${MAOMI_ASSETS_SOURCE_DEPENDENCIES}
     )
 
     # Prepare arguments for build script
@@ -1250,6 +1295,14 @@ function(build_default_assets_bin)
     # Add default assets extra files if defined
     if(DEFAULT_ASSETS_EXTRA_FILES)
         list(APPEND BUILD_ARGS "--extra_files" "${DEFAULT_ASSETS_EXTRA_FILES}")
+        file(GLOB_RECURSE DEFAULT_ASSETS_EXTRA_DEPENDENCIES CONFIGURE_DEPENDS
+            "${DEFAULT_ASSETS_EXTRA_FILES}/*"
+        )
+        list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${DEFAULT_ASSETS_EXTRA_DEPENDENCIES})
+    endif()
+
+    if(MAOMI_INDEX_EXTRA_IMAGES)
+        list(APPEND BUILD_ARGS "--index_extra_images")
     endif()
 
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")
@@ -1264,9 +1317,25 @@ function(build_default_assets_bin)
         VERBATIM
     )
 
-    # Create target for generated assets
+    if(MAOMI_ASSETS_VALIDATOR)
+        set(MAOMI_ASSETS_VALIDATED_STAMP "${GENERATED_ASSETS_BIN}.validated")
+        add_custom_command(
+            OUTPUT ${MAOMI_ASSETS_VALIDATED_STAMP}
+            COMMAND python "${MAOMI_ASSETS_VALIDATOR}" ${MAOMI_ASSETS_VALIDATOR_ARGS}
+                    "--assets-bin" "${GENERATED_ASSETS_BIN}"
+            COMMAND ${CMAKE_COMMAND} -E touch "${MAOMI_ASSETS_VALIDATED_STAMP}"
+            DEPENDS ${GENERATED_ASSETS_BIN} ${MAOMI_ASSETS_SOURCE_DEPENDENCIES}
+            COMMENT "Validating Maomi assets manifest and capacity"
+            VERBATIM
+        )
+        set(DEFAULT_ASSETS_TARGET_OUTPUT ${MAOMI_ASSETS_VALIDATED_STAMP})
+    else()
+        set(DEFAULT_ASSETS_TARGET_OUTPUT ${GENERATED_ASSETS_BIN})
+    endif()
+
+    # Create target for generated and validated assets
     add_custom_target(generated_default_assets ALL
-        DEPENDS ${GENERATED_ASSETS_BIN}
+        DEPENDS ${DEFAULT_ASSETS_TARGET_OUTPUT}
     )
 
     # Set the generated file path in parent scope
