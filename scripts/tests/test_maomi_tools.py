@@ -872,7 +872,7 @@ class MaomiToolsContractTest(unittest.TestCase):
             "ReleaseExpression(maomi::PetPriority::kReminder)", board_source
         )
 
-    def test_countdown_preempts_listening_and_speaking_with_retryable_sound(self):
+    def test_reminders_preempt_listening_and_speaking_with_retryable_sound(self):
         board_source = (
             BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
         ).read_text(encoding="utf-8")
@@ -884,7 +884,18 @@ class MaomiToolsContractTest(unittest.TestCase):
         )
         self.assertIn("const bool conversation_active =", board_source)
         self.assertIn(
-            ".allow_countdown_busy_preemption = conversation_active", board_source
+            ".allow_busy_preemption = conversation_active", board_source
+        )
+
+        reminder_handler = board_source.split(
+            "void HandleMaomiRemindersOnMainTask", 1
+        )[1].split("void UpdateMaomiAutonomyOnMainTask", 1)[0]
+        self.assertIn(
+            "if (conversation_active) {\n            PreemptMaomiConversationForReminder(device_state);",
+            reminder_handler,
+        )
+        self.assertNotIn(
+            "if (event.kind == maomi::ReminderKind::kCountdown)", reminder_handler
         )
 
         preemption = board_source.split(

@@ -820,10 +820,7 @@ ReminderEvent ReminderEngine::Update(const ReminderTick& tick) {
         const bool expired =
             tick.clock.monotonic_ms >= entry.pending_since_ms &&
             tick.clock.monotonic_ms - entry.pending_since_ms >= kMaximumBusyDeferralMs;
-        const bool countdown_can_preempt =
-            tick.allow_countdown_busy_preemption &&
-            entry.snapshot.kind == ReminderKind::kCountdown;
-        if (tick.device_busy && !expired && !countdown_can_preempt) {
+        if (tick.device_busy && !expired && !tick.allow_busy_preemption) {
             continue;
         }
         return FinishDue(&entry, tick, expired);

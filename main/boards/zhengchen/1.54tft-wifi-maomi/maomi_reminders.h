@@ -89,7 +89,7 @@ struct ReminderList {
 struct ReminderTick {
     ClockSnapshot clock;
     bool device_busy = false;
-    bool allow_countdown_busy_preemption = false;
+    bool allow_busy_preemption = false;
     bool low_battery = false;
 };
 

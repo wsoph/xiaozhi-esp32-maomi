@@ -631,7 +631,7 @@ private:
         const auto event = maomi_reminders_->Update({
             .clock = ReminderClockAt(monotonic_ms),
             .device_busy = device_busy,
-            .allow_countdown_busy_preemption = conversation_active,
+            .allow_busy_preemption = conversation_active,
             .low_battery = low_battery,
         });
         if (event.state == maomi::ReminderEventState::kNone) {
@@ -642,7 +642,7 @@ private:
         if (!presentation.show_animation) {
             return;
         }
-        if (event.kind == maomi::ReminderKind::kCountdown) {
+        if (conversation_active) {
             PreemptMaomiConversationForReminder(device_state);
         }
         const auto submit = maomi_pet_core_.Submit(maomi::Event::ReminderDue());

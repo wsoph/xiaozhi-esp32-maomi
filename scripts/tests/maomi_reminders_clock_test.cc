@@ -215,13 +215,13 @@ void TestCountdownPresentationSelectsTheNextDueItem() {
     CHECK(no_countdown.remaining_seconds == 0);
 }
 
-void TestOnlyCountdownsCanBypassConversationBusyDeferral() {
+void TestAllRemindersCanBypassConversationBusyDeferral() {
     Fixture fixture;
     const auto countdown = fixture.engine.StartCountdown(1, "conversation", Clock(0));
     const auto countdown_due = fixture.engine.Update({
         .clock = Clock(1000),
         .device_busy = true,
-        .allow_countdown_busy_preemption = true,
+        .allow_busy_preemption = true,
     });
     CHECK(countdown_due.state == maomi::ReminderEventState::kTriggered);
     CHECK(countdown_due.id == countdown.id);
@@ -229,17 +229,13 @@ void TestOnlyCountdownsCanBypassConversationBusyDeferral() {
     const auto alarm = fixture.engine.SetAlarm({2028, 3, 1, 8, 0, 1}, "alarm",
                                                Clock(0, {2028, 3, 1, 8, 0, 0}, true));
     CHECK(alarm.status == maomi::ReminderStatus::kAccepted);
-    CHECK(fixture.engine
-              .Update({
-                  .clock = Clock(2000, {2028, 3, 1, 8, 0, 1}, true),
-                  .device_busy = true,
-                  .allow_countdown_busy_preemption = true,
-              })
-              .state == maomi::ReminderEventState::kNone);
-    const auto alarm_after_conversation = fixture.engine.Update(
-        Tick(maomi::kImportantCommitIntervalMs, {2028, 3, 1, 8, 0, 10}, true));
-    CHECK(alarm_after_conversation.state == maomi::ReminderEventState::kTriggered);
-    CHECK(alarm_after_conversation.id == alarm.id);
+    const auto alarm_due = fixture.engine.Update({
+        .clock = Clock(maomi::kImportantCommitIntervalMs, {2028, 3, 1, 8, 0, 1}, true),
+        .device_busy = true,
+        .allow_busy_preemption = true,
+    });
+    CHECK(alarm_due.state == maomi::ReminderEventState::kTriggered);
+    CHECK(alarm_due.id == alarm.id);
 }
 
 void TestAlarmDateValidationAndTrustedTime() {
@@ -705,7 +701,7 @@ void TestAllReminderKindsMapToBoundedLocalPresentation() {
 int main() {
     TestCountdownBoundsAndMonotonicClock();
     TestCountdownPresentationSelectsTheNextDueItem();
-    TestOnlyCountdownsCanBypassConversationBusyDeferral();
+    TestAllRemindersCanBypassConversationBusyDeferral();
     TestAlarmDateValidationAndTrustedTime();
     TestPomodoroAlternatesAndStopsAfterCycles();
     TestRestartRestoresOnlyPersistentPlans();
