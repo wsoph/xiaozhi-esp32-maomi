@@ -52,6 +52,7 @@ ANIMATIONS = {
     "maomi_eat.gif": ("eat", 4, 260),
     "maomi_look.gif": ("look", 4, 420),
     "maomi_low_battery.gif": ("low_battery", 4, 360),
+    "maomi_listening.gif": ("listening", 4, 360),
     "maomi_pet.gif": ("pet", 4, 300),
     "maomi_play.gif": ("play", 4, 300),
     "maomi_reminder.gif": ("reminder", 4, 220),
@@ -261,6 +262,22 @@ def draw_expression(eye_style, mouth_style, *, motion=0, bob=0, accessory=None):
     return canvas.finish()
 
 
+def draw_listening(index):
+    canvas = Canvas()
+    draw_base(canvas)
+    draw_open_eye(canvas, 74, 100, pupil_dy=-3)
+    draw_open_eye(canvas, 166, 100, pupil_dy=-3)
+    draw_mouth(canvas, "small")
+
+    wave_count = (1, 2, 3, 2)[index]
+    left_waves = ((16, 70, 49, 132), (19, 78, 41, 124), (25, 86, 33, 116))
+    right_waves = ((191, 70, 224, 132), (199, 78, 221, 124), (207, 86, 215, 116))
+    for wave in range(wave_count):
+        canvas.arc(left_waves[wave], 270, 90, BLUE, 4)
+        canvas.arc(right_waves[wave], 90, 270, BLUE, 4)
+    return canvas.finish()
+
+
 def animation_frame(kind, index):
     if kind == "blink":
         return draw_expression("blink_closed" if index == 1 else "open", "small")
@@ -273,6 +290,8 @@ def animation_frame(kind, index):
         return draw_expression("open", "small", motion=(-8, 0, 8, 0)[index])
     if kind == "low_battery":
         return draw_expression("sad", "frown", motion=index, accessory="low_battery")
+    if kind == "listening":
+        return draw_listening(index)
     if kind == "pet":
         return draw_expression("closed", "smile", motion=(0, 2, 3, 2)[index], accessory="pet")
     if kind == "play":

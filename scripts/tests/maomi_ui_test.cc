@@ -119,11 +119,10 @@ struct ExpectedOverlay {
     maomi::SystemOverlay overlay;
 };
 
-constexpr std::array<ExpectedOverlay, 10> kExpectedOfficialOverlays = {{
+constexpr std::array<ExpectedOverlay, 9> kExpectedOfficialOverlays = {{
     {kDeviceStateStarting, maomi::SystemOverlay::kStarting},
     {kDeviceStateWifiConfiguring, maomi::SystemOverlay::kWifiConfiguring},
     {kDeviceStateConnecting, maomi::SystemOverlay::kConnecting},
-    {kDeviceStateListening, maomi::SystemOverlay::kListening},
     {kDeviceStateSpeaking, maomi::SystemOverlay::kSpeaking},
     {kDeviceStateNotifying, maomi::SystemOverlay::kNotifying},
     {kDeviceStateUpgrading, maomi::SystemOverlay::kUpgrading},
@@ -204,9 +203,21 @@ void TestListeningLetsInteractionAndReminderPresentationsThrough() {
     auto autonomous = interaction;
     autonomous.state = maomi::PetState::kBlinking;
     autonomous.priority = maomi::PetPriority::kAutonomous;
+    assets.Add("maomi_listening.gif");
     const auto autonomous_plan = mapper.Resolve(autonomous, false, assets);
-    CHECK(autonomous_plan.surface == maomi::UiSurface::kOfficial);
-    CHECK(autonomous_plan.overlay == maomi::SystemOverlay::kListening);
+    CHECK(autonomous_plan.surface == maomi::UiSurface::kPet);
+    CHECK(autonomous_plan.overlay == maomi::SystemOverlay::kNone);
+    CHECK(std::strcmp(autonomous_plan.asset_file, "maomi_listening.gif") == 0);
+    CHECK(std::strcmp(autonomous_plan.display_emotion, "maomi_listening") == 0);
+    CHECK(autonomous_plan.using_custom_asset);
+    CHECK(autonomous_plan.animated);
+    CHECK(autonomous_plan.frame_count == 4);
+    CHECK(autonomous_plan.minimum_frame_interval_ms == 360);
+
+    FakeAssetCatalog no_assets;
+    const auto fallback_plan = mapper.Resolve(autonomous, false, no_assets);
+    CHECK(fallback_plan.surface == maomi::UiSurface::kOfficial);
+    CHECK(fallback_plan.overlay == maomi::SystemOverlay::kListening);
 }
 
 maomi::PowerUiSample PowerSample(int battery_level, bool external_power_connected,

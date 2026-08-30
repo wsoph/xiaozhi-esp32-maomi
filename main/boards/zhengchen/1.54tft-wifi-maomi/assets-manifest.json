@@ -144,6 +144,10 @@
             "required": true
         },
         {
+            "file": "maomi_listening.gif",
+            "required": true
+        },
+        {
             "file": "maomi_pet.gif",
             "required": true
         },

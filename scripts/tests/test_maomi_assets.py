@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BOARD = ROOT / "main" / "boards" / "zhengchen" / "1.54tft-wifi-maomi"
@@ -42,6 +44,7 @@ ANIMATED_EMOJIS = [
     "maomi_eat.gif",
     "maomi_look.gif",
     "maomi_low_battery.gif",
+    "maomi_listening.gif",
     "maomi_pet.gif",
     "maomi_play.gif",
     "maomi_reminder.gif",
@@ -70,6 +73,15 @@ def load_validator():
 
 def load_manifest():
     return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def count_blue_pixels(image, x_start, x_end):
+    count = 0
+    for x in range(x_start, x_end):
+        for y in range(55, 135):
+            red, green, blue = image.getpixel((x, y))
+            count += blue > 180 and green > 140 and red < 150
+    return count
 
 
 class MaomiAssetsTest(unittest.TestCase):
@@ -129,6 +141,32 @@ class MaomiAssetsTest(unittest.TestCase):
                 ANIMATION_FRAME_COUNTS[filename],
                 filename,
             )
+
+    def test_listening_animation_matches_the_approved_first_design(self):
+        path = BOARD / "assets-extra" / "maomi_listening.gif"
+
+        with Image.open(path) as animation:
+            self.assertEqual(animation.size, (240, 240))
+            self.assertEqual(animation.n_frames, 4)
+            durations = []
+            bilateral_wave_frames = 0
+            for frame_index in range(animation.n_frames):
+                animation.seek(frame_index)
+                durations.append(animation.info["duration"])
+                frame = animation.convert("RGB")
+                left_blue = count_blue_pixels(frame, 0, 50)
+                right_blue = count_blue_pixels(frame, 190, 240)
+                bilateral_wave_frames += left_blue > 20 and right_blue > 20
+
+                # The physical shell supplies the ears, so both top corners remain plain fur.
+                for point in ((0, 0), (20, 20), (219, 20), (239, 0)):
+                    red, green, blue = frame.getpixel(point)
+                    self.assertGreater(red, 220)
+                    self.assertGreater(green, 130)
+                    self.assertLess(blue, 150)
+
+            self.assertEqual(durations, [360, 360, 360, 360])
+            self.assertEqual(bilateral_wave_frames, 4)
 
     def test_local_sounds_are_short_24_khz_mono_opus(self):
         for filename in LOCAL_SOUNDS:

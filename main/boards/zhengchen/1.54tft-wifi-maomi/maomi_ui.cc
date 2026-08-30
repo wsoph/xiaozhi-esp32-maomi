@@ -32,6 +32,10 @@ constexpr std::array<StateResource, kPetUiStateCount> kStateResources = {{
     {PetState::kReminding, "maomi_reminder.gif", "maomi_reminder", "surprised", true, 4, 220},
 }};
 
+constexpr StateResource kListeningResource = {
+    PetState::kIdle, "maomi_listening.gif", "maomi_listening", "neutral", true, 4, 360,
+};
+
 const StateResource& ResourceFor(PetState state) {
     const auto index = static_cast<size_t>(state);
     if (index >= kStateResources.size() || kStateResources[index].state != state) {
@@ -44,6 +48,26 @@ UiRenderPlan OfficialPlan(SystemOverlay overlay) {
     UiRenderPlan plan;
     plan.surface = UiSurface::kOfficial;
     plan.overlay = overlay;
+    return plan;
+}
+
+UiRenderPlan PetPlan(const StateResource& resource, const UiAssetCatalog& assets) {
+    const bool available = assets.HasAsset(resource.asset_file);
+
+    UiRenderPlan plan;
+    plan.surface = UiSurface::kPet;
+    plan.overlay = SystemOverlay::kNone;
+    plan.pet_state = resource.state;
+    plan.asset_file = resource.asset_file;
+    plan.display_emotion = available ? resource.custom_emotion : resource.fallback_emotion;
+    plan.fallback_emotion = resource.fallback_emotion;
+    plan.using_custom_asset = available;
+    plan.animated = available && resource.animated;
+    plan.frame_count = plan.animated ? resource.frame_count : 1;
+    plan.frame_cache_limit =
+        plan.frame_count > kUiFrameCacheLimit ? kUiFrameCacheLimit : plan.frame_count;
+    plan.minimum_frame_interval_ms =
+        plan.animated ? resource.minimum_frame_interval_ms : kMinimumUiFrameIntervalMs;
     return plan;
 }
 
@@ -108,29 +132,18 @@ UiRenderPlan UiMapper::Resolve(const Snapshot& snapshot, const PowerUiDecision& 
     const bool listening_local_expression = snapshot.official_state == kDeviceStateListening &&
                                             (snapshot.priority == PetPriority::kReminder ||
                                              snapshot.priority == PetPriority::kInteraction);
+    if (snapshot.official_state == kDeviceStateListening && !listening_local_expression) {
+        const auto listening_plan = PetPlan(kListeningResource, assets);
+        return listening_plan.using_custom_asset ? listening_plan
+                                                 : OfficialPlan(SystemOverlay::kListening);
+    }
     if (!listening_local_expression &&
         (snapshot.paused_by_official_state || overlay != SystemOverlay::kNone)) {
         return OfficialPlan(overlay == SystemOverlay::kNone ? SystemOverlay::kUnknown : overlay);
     }
 
     const auto& resource = ResourceFor(power.override_pet_state ? power.pet_state : snapshot.state);
-    const bool available = assets.HasAsset(resource.asset_file);
-
-    UiRenderPlan plan;
-    plan.surface = UiSurface::kPet;
-    plan.overlay = SystemOverlay::kNone;
-    plan.pet_state = resource.state;
-    plan.asset_file = resource.asset_file;
-    plan.display_emotion = available ? resource.custom_emotion : resource.fallback_emotion;
-    plan.fallback_emotion = resource.fallback_emotion;
-    plan.using_custom_asset = available;
-    plan.animated = available && resource.animated;
-    plan.frame_count = plan.animated ? resource.frame_count : 1;
-    plan.frame_cache_limit =
-        plan.frame_count > kUiFrameCacheLimit ? kUiFrameCacheLimit : plan.frame_count;
-    plan.minimum_frame_interval_ms =
-        plan.animated ? resource.minimum_frame_interval_ms : kMinimumUiFrameIntervalMs;
-    return plan;
+    return PetPlan(resource, assets);
 }
 
 SystemOverlay UiMapper::OverlayFor(DeviceState state) {
