@@ -227,8 +227,8 @@ const McpServer::Tool& FindTool(const McpServer& server, std::string_view name) 
 }
 
 void AssertSchema(const McpServer& server) {
-    assert(server.tools.size() == 10);
-    std::array<std::string, 10> names = {
+    assert(server.tools.size() == 12);
+    std::array<std::string, 12> names = {
         server.tools[0].name,
         server.tools[1].name,
         server.tools[2].name,
@@ -239,6 +239,8 @@ void AssertSchema(const McpServer& server) {
         server.tools[7].name,
         server.tools[8].name,
         server.tools[9].name,
+        server.tools[10].name,
+        server.tools[11].name,
     };
     std::sort(names.begin(), names.end());
     assert(std::adjacent_find(names.begin(), names.end()) == names.end());
@@ -248,7 +250,12 @@ void AssertSchema(const McpServer& server) {
     const auto& status = FindTool(server, maomi::kPetStatusToolName);
     const auto& quiet = FindTool(server, maomi::kPetQuietToolName);
     assert(!interact.description.empty());
-    assert(start_game.description.find("陪我玩") != std::string::npos);
+    assert(interact.description.find("play") == std::string::npos);
+    assert(interact.description.find("陪玩") == std::string::npos);
+    assert(start_game.description.find("明确说出具体游戏名称") != std::string::npos);
+    assert(start_game.description.find("未指定时") == std::string::npos);
+    assert(start_game.description.find("陪我玩") == std::string::npos);
+    assert(start_game.description.find("我们一起玩") == std::string::npos);
     assert(start_game.description.find("结束游戏") != std::string::npos);
     assert(start_game.description.find("no_yes_no") == std::string::npos);
     assert(start_game.description.find("cat_guess") != std::string::npos);
@@ -300,12 +307,31 @@ void AssertSchema(const McpServer& server) {
     const auto& pomodoro = FindTool(server, maomi::kPomodoroToolName);
     const auto& list = FindTool(server, maomi::kReminderListToolName);
     const auto& cancel = FindTool(server, maomi::kReminderCancelToolName);
+    const auto& stopwatch = FindTool(server, maomi::kStopwatchToolName);
+    const auto& timer_control = FindTool(server, maomi::kTimerControlToolName);
     assert(!countdown.description.empty());
     assert(!alarm.description.empty());
     assert(!interval.description.empty());
     assert(!pomodoro.description.empty());
     assert(!list.description.empty());
     assert(!cancel.description.empty());
+    assert(!stopwatch.description.empty());
+    assert(!timer_control.description.empty());
+
+    size_t stopwatch_fields = 0;
+    for (const auto& property : stopwatch.properties) {
+        static_cast<void>(property);
+        ++stopwatch_fields;
+    }
+    assert(stopwatch_fields == 0);
+    size_t timer_control_fields = 0;
+    for (const auto& property : timer_control.properties) {
+        ++timer_control_fields;
+        assert(property.name() == "action");
+        assert(property.type() == kPropertyTypeString);
+        assert(!property.has_default_value());
+    }
+    assert(timer_control_fields == 1);
 
     const auto assert_integer = [](const Property& property, std::string_view name, int minimum,
                                    int maximum) {
@@ -539,21 +565,50 @@ int main() {
     };
     reminder_dependencies.list = [&reminders]() { return reminders; };
 
+    maomi::ForegroundTimerSnapshot foreground_timer;
+    maomi::TimingToolDependencies timing_dependencies;
+    timing_dependencies.start_stopwatch = [&foreground_timer]() {
+        foreground_timer = {
+            .active = true,
+            .kind = maomi::ForegroundTimerKind::kStopwatch,
+            .state = maomi::TimingState::kRunning,
+        };
+        return maomi::TimingToolResult{
+            .status = maomi::TimingStatus::kAccepted,
+            .timer = foreground_timer,
+        };
+    };
+    timing_dependencies.control = [&foreground_timer](maomi::TimerControlAction action) {
+        if (!foreground_timer.active) {
+            return maomi::TimingToolResult{};
+        }
+        if (action == maomi::TimerControlAction::kPause) {
+            foreground_timer.state = maomi::TimingState::kPaused;
+        } else if (action == maomi::TimerControlAction::kResume) {
+            foreground_timer.state = maomi::TimingState::kRunning;
+        } else if (action == maomi::TimerControlAction::kReset) {
+            foreground_timer.value_ms = 0;
+        } else {
+            foreground_timer.active = false;
+            foreground_timer.state = maomi::TimingState::kStopped;
+        }
+        return maomi::TimingToolResult{
+            .status = maomi::TimingStatus::kAccepted,
+            .timer = foreground_timer,
+        };
+    };
+
     maomi::RegisterPetTools(server, std::move(dependencies));
     maomi::RegisterReminderTools(server, std::move(reminder_dependencies));
+    maomi::RegisterTimingTools(server, std::move(timing_dependencies));
     AssertSchema(server);
 
     const auto pet = server.Invoke(maomi::kPetInteractToolName, {{"action", std::string("pet")}});
     const auto feed =
         server.Invoke(maomi::kPetInteractToolName, {{"action", std::string("feed")}});
-    const auto play =
-        server.Invoke(maomi::kPetInteractToolName, {{"action", std::string("play")}});
     assert(pet.find("\"action\":\"pet\"") != std::string::npos);
     assert(feed.find("\"action\":\"feed\"") != std::string::npos);
-    assert(play.find("\"action\":\"play\"") != std::string::npos);
-    assert(play.find("\"status\":\"queued\"") != std::string::npos);
-    assert(play.find("\"points_added\":3") != std::string::npos);
-    assert(interactions == 3);
+    assert(interactions == 2);
 
     ExpectError([&server]() { server.Invoke(maomi::kPetInteractToolName); });
     ExpectError([&server]() {
@@ -562,13 +617,16 @@ int main() {
     ExpectError([&server]() {
         server.Invoke(maomi::kPetInteractToolName, {{"action", std::string("delete")}});
     });
-    assert(interactions == 3);
+    ExpectError([&server]() {
+        server.Invoke(maomi::kPetInteractToolName, {{"action", std::string("play")}});
+    });
+    assert(interactions == 2);
     reject_interactions = true;
     ExpectError([&server]() {
         server.Invoke(maomi::kPetInteractToolName, {{"action", std::string("pet")}});
     });
     reject_interactions = false;
-    assert(interactions == 4);
+    assert(interactions == 3);
 
     const auto cat_guess = server.Invoke(
         maomi::kPetStartGameToolName, {{"game", std::string("cat_guess")}});
@@ -678,6 +736,27 @@ int main() {
     assert(cancelled.find("\"id\":1") != std::string::npos);
     assert(reminder_mutations == 6);
 
+    const auto stopwatch = server.Invoke(maomi::kStopwatchToolName);
+    assert(stopwatch.find("\"type\":\"stopwatch\"") != std::string::npos);
+    assert(stopwatch.find("\"state\":\"running\"") != std::string::npos);
+    assert(stopwatch.find("\"seconds\":0") != std::string::npos);
+    const auto paused = server.Invoke(
+        maomi::kTimerControlToolName, {{"action", std::string("pause")}});
+    assert(paused.find("\"state\":\"paused\"") != std::string::npos);
+    const auto resumed = server.Invoke(
+        maomi::kTimerControlToolName, {{"action", std::string("resume")}});
+    assert(resumed.find("\"state\":\"running\"") != std::string::npos);
+    const auto reset = server.Invoke(
+        maomi::kTimerControlToolName, {{"action", std::string("reset")}});
+    assert(reset.find("\"seconds\":0") != std::string::npos);
+    const auto stopped = server.Invoke(
+        maomi::kTimerControlToolName, {{"action", std::string("stop")}});
+    assert(stopped.find("\"state\":\"stopped\"") != std::string::npos);
+    ExpectError([&server]() {
+        server.Invoke(maomi::kTimerControlToolName,
+                      {{"action", std::string("restart")}});
+    });
+
     ExpectError([&server]() {
         server.Invoke(maomi::kCountdownToolName, {{"duration_seconds", 0}});
     });
@@ -736,11 +815,12 @@ int main() {
     for (auto& caller : callers) {
         caller.join();
     }
-    assert(interactions == 4 + kThreadCount * kCallsPerThread);
+    assert(interactions == 3 + kThreadCount * kCallsPerThread);
 
     McpServer unavailable_server;
     maomi::RegisterPetTools(unavailable_server, {});
     maomi::RegisterReminderTools(unavailable_server, {});
+    maomi::RegisterTimingTools(unavailable_server, {});
     ExpectError([&unavailable_server]() {
         unavailable_server.Invoke(maomi::kPetInteractToolName,
                                   {{"action", std::string("pet")}});
@@ -780,6 +860,13 @@ int main() {
     });
     ExpectError([&unavailable_server]() {
         unavailable_server.Invoke(maomi::kReminderCancelToolName, {{"id", 1}});
+    });
+    ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kStopwatchToolName);
+    });
+    ExpectError([&unavailable_server]() {
+        unavailable_server.Invoke(maomi::kTimerControlToolName,
+                                  {{"action", std::string("pause")}});
     });
 
     std::cout << "maomi MCP tool contract tests passed" << std::endl;
@@ -849,6 +936,19 @@ class MaomiToolsContractTest(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
+    def test_foreground_timing_tools_use_one_shared_control_contract(self):
+        header = (BOARD / "maomi_tools.h").read_text(encoding="utf-8")
+        source = (BOARD / "maomi_tools.cc").read_text(encoding="utf-8")
+
+        self.assertIn('kStopwatchToolName[] = "self.stopwatch.start"', header)
+        self.assertIn('kTimerControlToolName[] = "self.timer.control"', header)
+        self.assertIn("RegisterTimingTools", header)
+        for action in ("pause", "resume", "stop", "reset"):
+            self.assertIn(f'action == "{action}"', source)
+        self.assertIn('\\"type\\":\\"', source)
+        self.assertIn('\\"state\\":\\"', source)
+        self.assertIn('\\"seconds\\":', source)
+
     def test_board_connects_reminder_tools_and_due_presentation(self):
         board_source = (
             BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
@@ -871,6 +971,41 @@ class MaomiToolsContractTest(unittest.TestCase):
         self.assertIn(
             "ReleaseExpression(maomi::PetPriority::kReminder)", board_source
         )
+
+    def test_board_owns_one_foreground_timer_and_enters_focus_standby(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('#include "maomi_timing.h"', board_source)
+        self.assertIn("maomi::Stopwatch maomi_stopwatch_", board_source)
+        self.assertIn("maomi_foreground_countdown_id_", board_source)
+        self.assertIn("RegisterTimingTools", board_source)
+        self.assertIn("EnterMaomiFocusStandby", board_source)
+        focus = board_source.split("void EnterMaomiFocusStandby", 1)[1].split(
+            "maomi::", 1
+        )[0]
+        self.assertIn("StopMaomiVoiceUpload();", focus)
+        self.assertIn("PreemptMaomiConversationForReminder", focus)
+
+        autonomy = board_source.split("const maomi::AutonomyInputs inputs", 1)[1].split(
+            "};", 1
+        )[0]
+        self.assertIn("HasMaomiForegroundTimer", autonomy)
+
+    def test_timer_display_supports_stopwatch_pause_and_conversation_hiding(self):
+        board_source = (
+            BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
+        ).read_text(encoding="utf-8")
+        display_source = (BOARD / "maomi_lcd_display.h").read_text(encoding="utf-8")
+
+        self.assertIn("UpdateMaomiTimerDisplay", board_source)
+        self.assertIn("maomi_stopwatch_.Get", board_source)
+        self.assertIn("IsMaomiConversationState", board_source)
+        self.assertIn("SetTimerSeconds", board_source)
+        self.assertIn("void SetTimerSeconds(int32_t seconds, bool paused)", display_source)
+        self.assertIn("countdown_pause_left_", display_source)
+        self.assertIn("countdown_pause_right_", display_source)
 
     def test_reminders_preempt_listening_and_speaking_with_retryable_sound(self):
         board_source = (
@@ -926,17 +1061,17 @@ class MaomiToolsContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         countdown_update = board_source.split(
-            "void UpdateMaomiCountdownDisplay", 1
-        )[1].split("void HandleMaomiRemindersOnMainTask", 1)[0]
-        self.assertIn("SelectCountdownPresentation", countdown_update)
-        self.assertIn("SetCountdownSeconds", countdown_update)
+            "void UpdateMaomiTimerDisplay", 1
+        )[1].split("void UpdateMaomiCountdownDisplay", 1)[0]
+        self.assertIn("GetMaomiForegroundTimer", countdown_update)
+        self.assertIn("SetTimerSeconds", countdown_update)
         self.assertIn("maomi_countdown_due_id_", countdown_update)
         self.assertNotIn("SetChatMessage", countdown_update)
 
         start_countdown = board_source.split(
             "reminder_dependencies.start_countdown", 1
         )[1].split("reminder_dependencies.set_alarm", 1)[0]
-        self.assertIn("UpdateMaomiCountdownDisplay(monotonic_ms);", start_countdown)
+        self.assertIn("StartMaomiFocusCountdown", start_countdown)
 
         self.assertIn("void SetupUI() override", display_source)
         self.assertIn("void SetCountdownSeconds(int32_t seconds)", display_source)
@@ -1004,7 +1139,7 @@ class MaomiToolsContractTest(unittest.TestCase):
             r"case maomi::AutonomyAction::kLookAround:\s+return maomi::PetState::kCurious;",
         )
 
-    def test_volume_up_double_click_schedules_pet_without_changing_volume(self):
+    def test_volume_up_double_click_schedules_pet_with_local_voice(self):
         board_source = (
             BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
         ).read_text(encoding="utf-8")
@@ -1022,11 +1157,20 @@ class MaomiToolsContractTest(unittest.TestCase):
             double_click_handler,
             r"Application::GetInstance\(\)\.Schedule\(\s*\[this\]\(\)",
         )
-        self.assertIn(
-            "HandleMaomiInteraction(maomi::PetAction::kPet);",
-            double_click_handler,
-        )
+        self.assertIn("HandleMaomiButtonPet();", double_click_handler)
         self.assertNotIn("SetOutputVolume", double_click_handler)
+
+        button_pet_handler = board_source.split(
+            "void HandleMaomiButtonPet()", 1
+        )[1].split("maomi::PetToolSnapshot GetMaomiToolSnapshot", 1)[0]
+        self.assertIn(
+            "HandleMaomiInteraction(maomi::PetAction::kPet)", button_pet_handler
+        )
+        self.assertIn("maomi_pet_voice_pending_ = true;", button_pet_handler)
+        self.assertIn("TryStartPendingMaomiPetVoice();", button_pet_handler)
+        self.assertIn(
+            'kMaomiPetVoiceSoundName[] = "maomi_pet_voice.ogg"', board_source
+        )
 
     def test_board_uses_owner_approved_meow_for_autonomous_cat_actions(self):
         board_source = (

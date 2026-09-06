@@ -39,6 +39,7 @@ enum class ReminderStatus : uint8_t {
     kPomodoroActive,
     kNotFound,
     kPersistenceUnavailable,
+    kInvalidState,
 };
 
 enum class RestoreStatus : uint8_t {
@@ -59,6 +60,7 @@ struct ReminderSnapshot {
     ReminderKind kind = ReminderKind::kCountdown;
     ReminderPhase phase = ReminderPhase::kNone;
     bool persistent = false;
+    bool paused = false;
     uint64_t remaining_ms = 0;
     int64_t next_wall_time_seconds = 0;
     uint32_t interval_seconds = 0;
@@ -134,6 +136,8 @@ public:
     RestoreResult Restore(const ClockSnapshot& clock);
     ReminderResult StartCountdown(uint32_t duration_seconds, std::string_view label,
                                   const ClockSnapshot& clock);
+    ReminderResult PauseCountdown(uint16_t id, const ClockSnapshot& clock);
+    ReminderResult ResumeCountdown(uint16_t id, const ClockSnapshot& clock);
     ReminderResult SetAlarm(const DateTime& target, std::string_view label,
                             const ClockSnapshot& clock);
     ReminderResult StartInterval(ReminderKind kind, uint32_t interval_minutes,
@@ -159,6 +163,7 @@ private:
         bool persistence_retry_pending = false;
         bool persistence_retry_missed = false;
         uint64_t deadline_ms = 0;
+        uint64_t paused_remaining_ms = 0;
         uint64_t pending_since_ms = 0;
         uint32_t work_seconds = 0;
         uint32_t break_seconds = 0;

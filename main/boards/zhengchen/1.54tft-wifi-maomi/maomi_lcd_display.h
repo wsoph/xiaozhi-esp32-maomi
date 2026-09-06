@@ -15,6 +15,8 @@ private:
 
     lv_obj_t* countdown_popup_ = nullptr;
     lv_obj_t* countdown_label_ = nullptr;
+    lv_obj_t* countdown_pause_left_ = nullptr;
+    lv_obj_t* countdown_pause_right_ = nullptr;
 
     lv_obj_t* CreateCountdownShape(int32_t x, int32_t y, int32_t width, int32_t height,
                                    uint32_t color, int32_t radius) {
@@ -76,6 +78,10 @@ private:
         lv_obj_set_style_text_align(countdown_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(countdown_label_, "");
         lv_obj_align(countdown_label_, LV_ALIGN_CENTER, 0, -4);
+        countdown_pause_left_ = CreateCountdownShape(108, 138, 8, 22, kCountdownInkColor, 2);
+        countdown_pause_right_ = CreateCountdownShape(124, 138, 8, 22, kCountdownInkColor, 2);
+        lv_obj_add_flag(countdown_pause_left_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(countdown_pause_right_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(countdown_popup_, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -101,7 +107,7 @@ public:
         SetupCountdownPopup();
     }
 
-    void SetCountdownSeconds(int32_t seconds) {
+    void SetTimerSeconds(int32_t seconds, bool paused) {
         DisplayLockGuard lock(this);
         if (countdown_popup_ == nullptr || countdown_label_ == nullptr) {
             return;
@@ -110,12 +116,26 @@ public:
             lv_obj_add_flag(countdown_popup_, LV_OBJ_FLAG_HIDDEN);
             return;
         }
+        if (seconds > 99 * 60 * 60 + 59 * 60 + 59) {
+            seconds = 99 * 60 * 60 + 59 * 60 + 59;
+        }
         const long hours = static_cast<long>(seconds / 3600);
         const long minutes = static_cast<long>((seconds / 60) % 60);
         const long remaining_seconds = static_cast<long>(seconds % 60);
         lv_label_set_text_fmt(countdown_label_, "%02ld:%02ld:%02ld", hours, minutes,
                               remaining_seconds);
+        if (countdown_pause_left_ != nullptr && countdown_pause_right_ != nullptr) {
+            if (paused) {
+                lv_obj_remove_flag(countdown_pause_left_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(countdown_pause_right_, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(countdown_pause_left_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(countdown_pause_right_, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
         lv_obj_remove_flag(countdown_popup_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(countdown_popup_);
     }
+
+    void SetCountdownSeconds(int32_t seconds) { SetTimerSeconds(seconds, false); }
 };

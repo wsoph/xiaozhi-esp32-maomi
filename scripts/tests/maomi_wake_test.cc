@@ -1,5 +1,6 @@
 #include "maomi_wake.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <iostream>
@@ -20,13 +21,13 @@ struct FakeRuntime {
     DeviceState state = kDeviceStateIdle;
     WakePlaybackResult playback_result = WakePlaybackResult::kLocalStarted;
     uint32_t playback_id = 42;
-    bool official_invoke_accepted = true;
+    bool listening_start_accepted = true;
     int stop_upload_calls = 0;
     int play_calls = 0;
-    int invoke_calls = 0;
+    int start_listening_calls = 0;
     int restore_calls = 0;
     int cancel_calls = 0;
-    int abort_official_calls = 0;
+    int abort_listening_calls = 0;
     std::vector<std::string> actions;
     std::vector<maomi::WakeLogEvent> logs;
 
@@ -48,18 +49,17 @@ struct FakeRuntime {
                     ++cancel_calls;
                     actions.emplace_back("cancel_playback");
                 },
-            .invoke_official =
-                [this](const std::string& wake_word) {
-                    assert(wake_word == "猫咪过来");
-                    ++invoke_calls;
-                    actions.emplace_back("invoke_official");
-                    return official_invoke_accepted;
-                },
-            .abort_official =
+            .start_listening =
                 [this]() {
-                    ++abort_official_calls;
+                    ++start_listening_calls;
+                    actions.emplace_back("start_listening");
+                    return listening_start_accepted;
+                },
+            .abort_listening =
+                [this]() {
+                    ++abort_listening_calls;
                     state = kDeviceStateIdle;
-                    actions.emplace_back("abort_official");
+                    actions.emplace_back("abort_listening");
                 },
             .restore_wake_detection =
                 [this]() {
@@ -72,7 +72,7 @@ struct FakeRuntime {
     }
 };
 
-void TestLocalResponsePrecedesOfficialAndStopsUpload() {
+void TestLocalResponsePrecedesDirectListeningAndStopsUpload() {
     FakeRuntime runtime;
     WakeSequence sequence(runtime.Dependencies());
 
@@ -80,14 +80,14 @@ void TestLocalResponsePrecedesOfficialAndStopsUpload() {
 
     assert(result == WakeHandleResult::kStarted);
     assert(runtime.actions == std::vector<std::string>({"stop_upload", "play_response"}));
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     assert(sequence.GetSnapshot().phase == WakePhase::kPlayingResponse);
 
     sequence.HandlePlaybackFinished(10'200, kDeviceStateIdle, runtime.playback_id);
     sequence.Poll(10'200 + maomi::kWakeOutputDrainMs, kDeviceStateIdle, true);
     assert(runtime.actions ==
-           std::vector<std::string>({"stop_upload", "play_response", "invoke_official"}));
-    assert(sequence.GetSnapshot().phase == WakePhase::kAwaitingOfficial);
+           std::vector<std::string>({"stop_upload", "play_response", "start_listening"}));
+    assert(sequence.GetSnapshot().phase == WakePhase::kAwaitingListening);
 
     sequence.Poll(10'300, kDeviceStateListening, true);
     assert(sequence.GetSnapshot().phase == WakePhase::kIdle);
@@ -96,7 +96,7 @@ void TestLocalResponsePrecedesOfficialAndStopsUpload() {
 
 void TestOfflineResponseRestoresDetection() {
     FakeRuntime runtime;
-    runtime.official_invoke_accepted = false;
+    runtime.listening_start_accepted = false;
     WakeSequence sequence(runtime.Dependencies());
 
     assert(sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 20'000) ==
@@ -106,7 +106,7 @@ void TestOfflineResponseRestoresDetection() {
     sequence.HandlePlaybackFinished(20'200, kDeviceStateIdle, runtime.playback_id);
     sequence.Poll(20'200 + maomi::kWakeOutputDrainMs, kDeviceStateIdle, true);
 
-    assert(runtime.invoke_calls == 1);
+    assert(runtime.start_listening_calls == 1);
     assert(runtime.restore_calls == 1);
     assert(sequence.GetSnapshot().phase == WakePhase::kIdle);
     assert(!sequence.IsBusy());
@@ -121,18 +121,18 @@ void TestMissingCustomSoundUsesFallbackOnce() {
     sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 30'000);
     assert(sequence.GetSnapshot().fallback_count == 1);
     assert(runtime.play_calls == 1);
-    assert(runtime.invoke_calls == 1);
-    assert(sequence.GetSnapshot().phase == WakePhase::kAwaitingOfficial);
+    assert(runtime.start_listening_calls == 1);
+    assert(sequence.GetSnapshot().phase == WakePhase::kAwaitingListening);
 }
 
-void TestUnrelatedPlaybackDrainDoesNotStartOfficialFlow() {
+void TestUnrelatedPlaybackDrainDoesNotStartListeningFlow() {
     FakeRuntime runtime;
     WakeSequence sequence(runtime.Dependencies());
 
     sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 35'000);
     sequence.HandlePlaybackFinished(35'200, kDeviceStateListening, runtime.playback_id);
 
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     assert(!sequence.IsBusy());
 }
 
@@ -143,7 +143,7 @@ void TestWrongPlaybackTicketIsIgnored() {
     sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 37'000);
     sequence.HandlePlaybackFinished(37'200, kDeviceStateIdle, runtime.playback_id + 1);
 
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     assert(sequence.IsBusy());
     assert(sequence.GetSnapshot().phase == WakePhase::kPlayingResponse);
 }
@@ -155,7 +155,7 @@ void TestPlaybackFailureRecoversWithoutListening() {
 
     sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 40'000);
 
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     assert(runtime.restore_calls == 1);
     assert(sequence.GetSnapshot().playback_failure_count == 1);
     assert(sequence.GetSnapshot().phase == WakePhase::kIdle);
@@ -191,13 +191,13 @@ void TestIllegalStatesPassThroughUntouched() {
 
     assert(runtime.stop_upload_calls == 0);
     assert(runtime.play_calls == 0);
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     assert(runtime.restore_calls == 0);
 }
 
 void TestTwoSecondCooldownSuppressesEchoAndRestoresDetection() {
     FakeRuntime runtime;
-    runtime.official_invoke_accepted = false;
+    runtime.listening_start_accepted = false;
     WakeSequence sequence(runtime.Dependencies());
 
     assert(sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 70'000) ==
@@ -227,7 +227,7 @@ void TestStalledPlaybackTimesOutAndClearsWork() {
     sequence.Poll(80'000 + maomi::kWakePlaybackTimeoutMs, kDeviceStateIdle, false);
     assert(runtime.cancel_calls == 1);
     assert(runtime.restore_calls == 1);
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     assert(!sequence.IsBusy());
     assert(sequence.GetSnapshot().phase == WakePhase::kIdle);
 }
@@ -251,35 +251,35 @@ void TestPlaybackIdleBeforeCompletionCallbackDoesNotWinRace() {
     sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 90'000);
     sequence.Poll(90'100, kDeviceStateIdle, true);
 
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     assert(runtime.cancel_calls == 0);
     assert(runtime.restore_calls == 0);
     assert(sequence.GetSnapshot().playback_failure_count == 0);
     assert(sequence.IsBusy());
 
     sequence.HandlePlaybackFinished(90'101, kDeviceStateIdle, runtime.playback_id);
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     sequence.Poll(90'101 + maomi::kWakeOutputDrainMs, kDeviceStateIdle, true);
-    assert(runtime.invoke_calls == 1);
-    assert(sequence.GetSnapshot().phase == WakePhase::kAwaitingOfficial);
+    assert(runtime.start_listening_calls == 1);
+    assert(sequence.GetSnapshot().phase == WakePhase::kAwaitingListening);
 }
 
-void TestHardwareOutputDrainPrecedesOfficialInvoke() {
+void TestHardwareOutputDrainPrecedesDirectListening() {
     FakeRuntime runtime;
     WakeSequence sequence(runtime.Dependencies());
 
     sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 92'000);
     sequence.HandlePlaybackFinished(92'100, kDeviceStateIdle, runtime.playback_id);
 
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
     assert(sequence.GetSnapshot().phase == WakePhase::kDrainingOutput);
 
     sequence.Poll(92'100 + maomi::kWakeOutputDrainMs - 1, kDeviceStateIdle, true);
-    assert(runtime.invoke_calls == 0);
+    assert(runtime.start_listening_calls == 0);
 
     sequence.Poll(92'100 + maomi::kWakeOutputDrainMs, kDeviceStateIdle, true);
-    assert(runtime.invoke_calls == 1);
-    assert(sequence.GetSnapshot().phase == WakePhase::kAwaitingOfficial);
+    assert(runtime.start_listening_calls == 1);
+    assert(sequence.GetSnapshot().phase == WakePhase::kAwaitingListening);
 }
 
 void TestConnectingWithoutProgressTimesOutAndRestoresDetection() {
@@ -289,16 +289,31 @@ void TestConnectingWithoutProgressTimesOutAndRestoresDetection() {
     sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 95'000);
     sequence.HandlePlaybackFinished(95'100, kDeviceStateIdle, runtime.playback_id);
     sequence.Poll(95'100 + maomi::kWakeOutputDrainMs, kDeviceStateIdle, true);
-    sequence.Poll(95'100 + maomi::kWakeOutputDrainMs + maomi::kWakeOfficialStartTimeoutMs - 1,
+    sequence.Poll(95'100 + maomi::kWakeOutputDrainMs + maomi::kWakeListeningStartTimeoutMs - 1,
                   kDeviceStateConnecting, true);
     assert(sequence.IsBusy());
 
-    sequence.Poll(95'100 + maomi::kWakeOutputDrainMs + maomi::kWakeOfficialStartTimeoutMs,
+    sequence.Poll(95'100 + maomi::kWakeOutputDrainMs + maomi::kWakeListeningStartTimeoutMs,
                   kDeviceStateConnecting, true);
     assert(!sequence.IsBusy());
-    assert(runtime.abort_official_calls == 1);
+    assert(runtime.abort_listening_calls == 1);
     assert(runtime.restore_calls == 1);
     assert(sequence.GetSnapshot().recovery_count == 1);
+}
+
+void TestSpeakingDoesNotCountAsDirectListeningSuccess() {
+    FakeRuntime runtime;
+    WakeSequence sequence(runtime.Dependencies());
+
+    sequence.HandleWakeWord("猫咪过来", kDeviceStateIdle, 98'000);
+    sequence.HandlePlaybackFinished(98'100, kDeviceStateIdle, runtime.playback_id);
+    sequence.Poll(98'100 + maomi::kWakeOutputDrainMs, kDeviceStateIdle, true);
+    sequence.Poll(98'200, kDeviceStateSpeaking, true);
+
+    assert(!sequence.IsBusy());
+    assert(sequence.GetSnapshot().phase == WakePhase::kIdle);
+    assert(std::find(runtime.logs.begin(), runtime.logs.end(),
+                     maomi::WakeLogEvent::kListeningCompleted) == runtime.logs.end());
 }
 
 void TestHundredSequencesLeaveNoPendingWork() {
@@ -325,21 +340,21 @@ void TestHundredSequencesLeaveNoPendingWork() {
 
     const auto snapshot = sequence.GetSnapshot();
     assert(snapshot.started_count == 100);
-    assert(snapshot.official_invoke_count == 100);
+    assert(snapshot.listening_start_count == 100);
     assert(snapshot.pending_operations == 0);
     assert(runtime.stop_upload_calls == 100);
     assert(runtime.play_calls == 100);
-    assert(runtime.invoke_calls == 100);
+    assert(runtime.start_listening_calls == 100);
     assert(runtime.cancel_calls == 0);
 }
 
 }  // namespace
 
 int main() {
-    TestLocalResponsePrecedesOfficialAndStopsUpload();
+    TestLocalResponsePrecedesDirectListeningAndStopsUpload();
     TestOfflineResponseRestoresDetection();
     TestMissingCustomSoundUsesFallbackOnce();
-    TestUnrelatedPlaybackDrainDoesNotStartOfficialFlow();
+    TestUnrelatedPlaybackDrainDoesNotStartListeningFlow();
     TestWrongPlaybackTicketIsIgnored();
     TestPlaybackFailureRecoversWithoutListening();
     TestConnectionFailureBackAtIdleRestoresDetection();
@@ -348,8 +363,9 @@ int main() {
     TestStalledPlaybackTimesOutAndClearsWork();
     TestMaximumAcceptedSoundHasTimeoutMargin();
     TestPlaybackIdleBeforeCompletionCallbackDoesNotWinRace();
-    TestHardwareOutputDrainPrecedesOfficialInvoke();
+    TestHardwareOutputDrainPrecedesDirectListening();
     TestConnectingWithoutProgressTimesOutAndRestoresDetection();
+    TestSpeakingDoesNotCountAsDirectListeningSuccess();
     TestHundredSequencesLeaveNoPendingWork();
     std::cout << "maomi_wake tests passed" << std::endl;
     return 0;

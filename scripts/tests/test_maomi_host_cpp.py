@@ -148,6 +148,15 @@ class MaomiHostCppTest(unittest.TestCase):
             ],
         )
 
+    def test_timing_contract(self):
+        self.compile_and_run(
+            "maomi-timing-test",
+            [
+                ROOT / "scripts" / "tests" / "maomi_timing_test.cc",
+                BOARD / "maomi_timing.cc",
+            ],
+        )
+
     def test_ui_mapping_contract(self):
         self.compile_and_run(
             "maomi-ui-test",

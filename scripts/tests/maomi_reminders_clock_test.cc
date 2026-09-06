@@ -173,6 +173,58 @@ void TestCountdownBoundsAndMonotonicClock() {
           maomi::ReminderStatus::kInvalidArgument);
 }
 
+void TestCountdownPauseFreezesAndResumePreservesRemainingTime() {
+    Fixture fixture;
+    const auto countdown = fixture.engine.StartCountdown(10, "focus", Clock(1000));
+    CHECK(countdown.status == maomi::ReminderStatus::kAccepted);
+
+    const auto paused = fixture.engine.PauseCountdown(countdown.id, Clock(4000));
+    CHECK(paused.status == maomi::ReminderStatus::kAccepted);
+    auto list = fixture.engine.List(Clock(4000));
+    CHECK(list.count == 1);
+    CHECK(list.items[0].paused);
+    CHECK(list.items[0].remaining_ms == 7000);
+
+    list = fixture.engine.List(Clock(20000));
+    CHECK(list.items[0].paused);
+    CHECK(list.items[0].remaining_ms == 7000);
+    CHECK(fixture.engine.Update(Tick(20000)).state == maomi::ReminderEventState::kNone);
+
+    const auto resumed = fixture.engine.ResumeCountdown(countdown.id, Clock(20000));
+    CHECK(resumed.status == maomi::ReminderStatus::kAccepted);
+    list = fixture.engine.List(Clock(20000));
+    CHECK(!list.items[0].paused);
+    CHECK(list.items[0].remaining_ms == 7000);
+    CHECK(fixture.engine.Update(Tick(26999)).state == maomi::ReminderEventState::kNone);
+    const auto due = fixture.engine.Update(Tick(27000));
+    CHECK(due.state == maomi::ReminderEventState::kTriggered);
+    CHECK(due.id == countdown.id);
+}
+
+void TestCountdownPauseRejectsInvalidStateAndNonCountdownItems() {
+    Fixture fixture;
+    const auto countdown = fixture.engine.StartCountdown(10, "focus", Clock(0));
+    CHECK(fixture.engine.ResumeCountdown(countdown.id, Clock(0)).status ==
+          maomi::ReminderStatus::kInvalidState);
+    CHECK(fixture.engine.PauseCountdown(countdown.id, Clock(1000)).status ==
+          maomi::ReminderStatus::kAccepted);
+    CHECK(fixture.engine.PauseCountdown(countdown.id, Clock(2000)).status ==
+          maomi::ReminderStatus::kInvalidState);
+    CHECK(fixture.engine.ResumeCountdown(countdown.id, Clock(2000)).status ==
+          maomi::ReminderStatus::kAccepted);
+    CHECK(fixture.engine.ResumeCountdown(countdown.id, Clock(3000)).status ==
+          maomi::ReminderStatus::kInvalidState);
+
+    const auto pomodoro = fixture.engine.StartPomodoro(1, 1, 1, Clock(0));
+    CHECK(pomodoro.status == maomi::ReminderStatus::kAccepted);
+    CHECK(fixture.engine.PauseCountdown(pomodoro.id, Clock(0)).status ==
+          maomi::ReminderStatus::kInvalidArgument);
+    CHECK(fixture.engine.ResumeCountdown(pomodoro.id, Clock(0)).status ==
+          maomi::ReminderStatus::kInvalidArgument);
+    CHECK(fixture.engine.PauseCountdown(65535, Clock(0)).status ==
+          maomi::ReminderStatus::kNotFound);
+}
+
 void TestCountdownPresentationSelectsTheNextDueItem() {
     maomi::ReminderList reminders;
     reminders.items[0] = {
@@ -700,6 +752,8 @@ void TestAllReminderKindsMapToBoundedLocalPresentation() {
 
 int main() {
     TestCountdownBoundsAndMonotonicClock();
+    TestCountdownPauseFreezesAndResumePreservesRemainingTime();
+    TestCountdownPauseRejectsInvalidStateAndNonCountdownItems();
     TestCountdownPresentationSelectsTheNextDueItem();
     TestAllRemindersCanBypassConversationBusyDeferral();
     TestAlarmDateValidationAndTrustedTime();

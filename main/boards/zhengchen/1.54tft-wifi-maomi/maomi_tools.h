@@ -3,6 +3,7 @@
 #include "maomi_bond.h"
 #include "maomi_pet_core.h"
 #include "maomi_reminders.h"
+#include "maomi_timing.h"
 
 #include <cstdint>
 #include <functional>
@@ -22,6 +23,8 @@ inline constexpr char kIntervalReminderToolName[] = "self.reminder.start_interva
 inline constexpr char kPomodoroToolName[] = "self.pomodoro.start";
 inline constexpr char kReminderListToolName[] = "self.reminder.list";
 inline constexpr char kReminderCancelToolName[] = "self.reminder.cancel";
+inline constexpr char kStopwatchToolName[] = "self.stopwatch.start";
+inline constexpr char kTimerControlToolName[] = "self.timer.control";
 
 enum class PetAction : uint8_t {
     kPet,
@@ -87,6 +90,36 @@ struct ReminderToolDependencies {
     std::function<ReminderList()> list;
 };
 
+enum class ForegroundTimerKind : uint8_t {
+    kCountdown,
+    kStopwatch,
+};
+
+enum class TimerControlAction : uint8_t {
+    kPause,
+    kResume,
+    kStop,
+    kReset,
+};
+
+struct ForegroundTimerSnapshot {
+    bool active = false;
+    ForegroundTimerKind kind = ForegroundTimerKind::kCountdown;
+    TimingState state = TimingState::kStopped;
+    uint16_t id = 0;
+    uint64_t value_ms = 0;
+};
+
+struct TimingToolResult {
+    TimingStatus status = TimingStatus::kInvalidState;
+    ForegroundTimerSnapshot timer;
+};
+
+struct TimingToolDependencies {
+    std::function<TimingToolResult()> start_stopwatch;
+    std::function<TimingToolResult(TimerControlAction)> control;
+};
+
 // McpServer validates required field types and schedules callbacks onto the application main task.
 // These callbacks add the action whitelist and reject unavailable or inconsistent board results.
 void RegisterPetTools(McpServer& server, PetToolDependencies dependencies);
@@ -94,5 +127,8 @@ void RegisterPetTools(McpServer& server, PetToolDependencies dependencies);
 // Registers local reminder operations. McpServer runs callbacks on the application main task;
 // every dependency must report the engine's real result instead of optimistic success.
 void RegisterReminderTools(McpServer& server, ReminderToolDependencies dependencies);
+
+// Registers the single foreground timer contract shared by countdown and stopwatch.
+void RegisterTimingTools(McpServer& server, TimingToolDependencies dependencies);
 
 }  // namespace maomi

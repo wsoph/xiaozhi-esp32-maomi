@@ -172,6 +172,10 @@
             "required": true
         },
         {
+            "file": "maomi_pet_voice.ogg",
+            "required": true
+        },
+        {
             "file": "maomi_prompt.ogg",
             "required": true
         },
