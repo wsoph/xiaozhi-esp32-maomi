@@ -13,6 +13,7 @@
 #include "maomi_pet_core.h"
 #include "maomi_reminders.h"
 #include "maomi_storage.h"
+#include "maomi_timing.h"
 #include "maomi_tools.h"
 #include "maomi_ui.h"
 #include "maomi_variant.h"
@@ -48,6 +49,7 @@ constexpr uint64_t kMaomiInteractionVisibleDurationMs = 4'000;
 constexpr uint64_t kMaomiReminderVisibleDurationMs = 4'000;
 constexpr char kMaomiReminderSoundName[] = "maomi_prompt.ogg";
 constexpr char kMaomiLowBatteryVoiceSoundName[] = "maomi_low_battery_voice.ogg";
+constexpr char kMaomiPetVoiceSoundName[] = "maomi_pet_voice.ogg";
 
 bool IsMaomiConversationState(DeviceState state) {
     return state == kDeviceStateListening || state == kDeviceStateSpeaking;
@@ -83,6 +85,7 @@ private:
     maomi::ReliableClock maomi_clock_;
     std::unique_ptr<maomi::BondTracker> maomi_bond_;
     std::unique_ptr<maomi::ReminderEngine> maomi_reminders_;
+    maomi::Stopwatch maomi_stopwatch_;
     maomi::AutonomyController maomi_autonomy_{kMaomiAutonomyRandomSeed};
     maomi::UiMapper maomi_ui_mapper_;
     maomi::PowerUiPolicy maomi_power_ui_policy_;
@@ -111,9 +114,12 @@ private:
     uint64_t maomi_reminder_last_update_ms_ = 0;
     bool maomi_reminder_sound_pending_ = false;
     bool maomi_low_battery_voice_pending_ = false;
+    bool maomi_pet_voice_pending_ = false;
     uint16_t maomi_countdown_due_id_ = 0;
+    uint16_t maomi_foreground_countdown_id_ = 0;
     uint16_t maomi_displayed_countdown_id_ = 0;
     int32_t maomi_displayed_countdown_seconds_ = -1;
+    bool maomi_displayed_timer_paused_ = false;
     std::string_view last_maomi_display_emotion_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
@@ -252,29 +258,29 @@ private:
             case maomi::WakeLogEvent::kPlaybackTimedOut:
                 event_name = "playback_timed_out";
                 break;
-            case maomi::WakeLogEvent::kOfficialInvoked:
-                event_name = "official_invoked";
+            case maomi::WakeLogEvent::kListeningStarted:
+                event_name = "listening_started";
                 break;
-            case maomi::WakeLogEvent::kOfficialCompleted:
-                event_name = "official_completed";
+            case maomi::WakeLogEvent::kListeningCompleted:
+                event_name = "listening_completed";
                 break;
             case maomi::WakeLogEvent::kRecovered:
                 event_name = "recovered";
                 break;
-            case maomi::WakeLogEvent::kAbandonedForOfficialState:
-                event_name = "official_state_preempted";
+            case maomi::WakeLogEvent::kAbandonedForDeviceState:
+                event_name = "device_state_preempted";
                 break;
         }
         ESP_LOGI(TAG,
                  "event=maomi_wake_%s sequence_id=%lu phase=%u started=%lu fallback=%lu "
-                 "duplicates=%lu playback_failures=%lu official_invokes=%lu recoveries=%lu",
+                 "duplicates=%lu playback_failures=%lu listening_starts=%lu recoveries=%lu",
                  event_name, static_cast<unsigned long>(snapshot.sequence_id),
                  static_cast<unsigned>(snapshot.phase),
                  static_cast<unsigned long>(snapshot.started_count),
                  static_cast<unsigned long>(snapshot.fallback_count),
                  static_cast<unsigned long>(snapshot.duplicate_count),
                  static_cast<unsigned long>(snapshot.playback_failure_count),
-                 static_cast<unsigned long>(snapshot.official_invoke_count),
+                 static_cast<unsigned long>(snapshot.listening_start_count),
                  static_cast<unsigned long>(snapshot.recovery_count));
     }
 
@@ -296,7 +302,6 @@ private:
                 }
                 const auto result = maomi_wake_.HandleWakeWord(wake_word, state, MonotonicMs());
                 if (result == maomi::WakeHandleResult::kStarted) {
-                    maomi_pet_core_.Submit(maomi::Event::UserWake());
                     UpdateMaomiAutonomyOnMainTask(maomi::ActivitySource::kWakeWord);
                 }
                 return result != maomi::WakeHandleResult::kPassThrough;
@@ -587,31 +592,213 @@ private:
         }
     }
 
-    void UpdateMaomiCountdownDisplay(uint64_t monotonic_ms) {
+    void TryStartPendingMaomiPetVoice() {
+        if (!maomi_pet_voice_pending_) {
+            return;
+        }
+        if (!HasMaomiSound(kMaomiPetVoiceSoundName)) {
+            maomi_pet_voice_pending_ = false;
+            ESP_LOGW(TAG, "Maomi pet voice asset is unavailable");
+            return;
+        }
+        if (TryPlayMaomiSound(kMaomiPetVoiceSoundName, false)) {
+            maomi_pet_voice_pending_ = false;
+        }
+    }
+
+    maomi::ForegroundTimerSnapshot GetMaomiForegroundTimer(uint64_t monotonic_ms) {
+        if (maomi_foreground_countdown_id_ != 0) {
+            if (!maomi_reminders_) {
+                maomi_foreground_countdown_id_ = 0;
+            } else {
+                const auto reminders = maomi_reminders_->List(ReminderClockAt(monotonic_ms));
+                for (size_t index = 0; index < reminders.count; ++index) {
+                    const auto& item = reminders.items[index];
+                    if (item.id != maomi_foreground_countdown_id_ ||
+                        item.kind != maomi::ReminderKind::kCountdown) {
+                        continue;
+                    }
+                    return {
+                        .active = true,
+                        .kind = maomi::ForegroundTimerKind::kCountdown,
+                        .state = item.paused ? maomi::TimingState::kPaused
+                                             : maomi::TimingState::kRunning,
+                        .id = item.id,
+                        .value_ms = item.remaining_ms,
+                    };
+                }
+                maomi_foreground_countdown_id_ = 0;
+            }
+        }
+
+        const auto stopwatch = maomi_stopwatch_.Get(monotonic_ms);
+        if (stopwatch.active) {
+            return {
+                .active = true,
+                .kind = maomi::ForegroundTimerKind::kStopwatch,
+                .state = stopwatch.state,
+                .value_ms = stopwatch.elapsed_ms,
+            };
+        }
+        return {};
+    }
+
+    bool HasMaomiForegroundTimer(uint64_t monotonic_ms) {
+        return GetMaomiForegroundTimer(monotonic_ms).active;
+    }
+
+    void EnterMaomiFocusStandby() {
+        auto& app = Application::GetInstance();
+        const DeviceState state = app.GetDeviceState();
+        StopMaomiVoiceUpload();
+        if (maomi_autonomy_sound_playing_) {
+            CancelTrackedMaomiSound();
+        }
+        PreemptMaomiConversationForReminder(state);
+        if (state == kDeviceStateConnecting) {
+            app.SetDeviceState(kDeviceStateIdle);
+        }
+    }
+
+    maomi::ReminderResult StartMaomiFocusCountdown(uint32_t duration_seconds,
+                                                   std::string_view label) {
+        const uint64_t monotonic_ms = MonotonicMs();
+        ObserveMaomiClockOnMainTask(monotonic_ms);
+        if (!maomi_reminders_) {
+            return {.status = maomi::ReminderStatus::kInvalidState};
+        }
+        if (HasMaomiForegroundTimer(monotonic_ms)) {
+            return {.status = maomi::ReminderStatus::kInvalidState};
+        }
+        const auto result = maomi_reminders_->StartCountdown(duration_seconds, label,
+                                                             ReminderClockAt(monotonic_ms));
+        if (result.status == maomi::ReminderStatus::kAccepted) {
+            maomi_foreground_countdown_id_ = result.id;
+            EnterMaomiFocusStandby();
+        }
+        UpdateMaomiTimerDisplay(monotonic_ms);
+        return result;
+    }
+
+    maomi::TimingToolResult StartMaomiStopwatch() {
+        const uint64_t monotonic_ms = MonotonicMs();
+        if (HasMaomiForegroundTimer(monotonic_ms) ||
+            maomi_stopwatch_.Start(monotonic_ms) != maomi::TimingStatus::kAccepted) {
+            return {};
+        }
+        EnterMaomiFocusStandby();
+        UpdateMaomiTimerDisplay(monotonic_ms);
+        return {
+            .status = maomi::TimingStatus::kAccepted,
+            .timer = GetMaomiForegroundTimer(monotonic_ms),
+        };
+    }
+
+    maomi::TimingToolResult ControlMaomiForegroundTimer(maomi::TimerControlAction action) {
+        const uint64_t monotonic_ms = MonotonicMs();
+        const auto before = GetMaomiForegroundTimer(monotonic_ms);
+        if (!before.active) {
+            return {};
+        }
+
+        bool accepted = false;
+        if (before.kind == maomi::ForegroundTimerKind::kCountdown) {
+            maomi::ReminderResult result;
+            switch (action) {
+                case maomi::TimerControlAction::kPause:
+                    result =
+                        maomi_reminders_->PauseCountdown(before.id, ReminderClockAt(monotonic_ms));
+                    accepted = result.status == maomi::ReminderStatus::kAccepted;
+                    break;
+                case maomi::TimerControlAction::kResume:
+                    result =
+                        maomi_reminders_->ResumeCountdown(before.id, ReminderClockAt(monotonic_ms));
+                    accepted = result.status == maomi::ReminderStatus::kAccepted;
+                    break;
+                case maomi::TimerControlAction::kStop:
+                    result = maomi_reminders_->Cancel(before.id, ReminderClockAt(monotonic_ms));
+                    accepted = result.status == maomi::ReminderStatus::kCancelled;
+                    break;
+                case maomi::TimerControlAction::kReset:
+                    break;
+            }
+        } else {
+            maomi::TimingStatus status = maomi::TimingStatus::kInvalidState;
+            switch (action) {
+                case maomi::TimerControlAction::kPause:
+                    status = maomi_stopwatch_.Pause(monotonic_ms);
+                    break;
+                case maomi::TimerControlAction::kResume:
+                    status = maomi_stopwatch_.Resume(monotonic_ms);
+                    break;
+                case maomi::TimerControlAction::kStop:
+                    status = maomi_stopwatch_.Stop();
+                    break;
+                case maomi::TimerControlAction::kReset:
+                    status = maomi_stopwatch_.Reset(monotonic_ms);
+                    break;
+            }
+            accepted = status == maomi::TimingStatus::kAccepted;
+        }
+        if (!accepted) {
+            return {};
+        }
+
+        auto after = GetMaomiForegroundTimer(monotonic_ms);
+        if (action == maomi::TimerControlAction::kStop) {
+            if (before.kind == maomi::ForegroundTimerKind::kCountdown) {
+                maomi_foreground_countdown_id_ = 0;
+            }
+            after = before;
+            after.active = false;
+            after.state = maomi::TimingState::kStopped;
+        } else {
+            EnterMaomiFocusStandby();
+        }
+        UpdateMaomiTimerDisplay(monotonic_ms);
+        return {.status = maomi::TimingStatus::kAccepted, .timer = after};
+    }
+
+    void UpdateMaomiTimerDisplay(uint64_t monotonic_ms) {
         if (!display_->IsSetupUICalled()) {
             return;
         }
-        maomi::CountdownPresentation countdown;
+        maomi::ForegroundTimerSnapshot timer;
         if (maomi_countdown_due_id_ != 0 && maomi_reminder_remaining_ms_ != 0) {
-            countdown = {
-                .visible = true,
+            timer = {
+                .active = true,
+                .kind = maomi::ForegroundTimerKind::kCountdown,
+                .state = maomi::TimingState::kRunning,
                 .id = maomi_countdown_due_id_,
-                .remaining_seconds = 0,
+                .value_ms = 0,
             };
-        } else if (maomi_reminders_) {
-            countdown = maomi::SelectCountdownPresentation(
-                maomi_reminders_->List(ReminderClockAt(monotonic_ms)));
+        } else {
+            timer = GetMaomiForegroundTimer(monotonic_ms);
         }
 
-        const int32_t seconds =
-            countdown.visible ? static_cast<int32_t>(countdown.remaining_seconds) : -1;
-        if (countdown.id == maomi_displayed_countdown_id_ &&
-            seconds == maomi_displayed_countdown_seconds_) {
+        const DeviceState state = Application::GetInstance().GetDeviceState();
+        const bool conversation_visible =
+            IsMaomiConversationState(state) || state == kDeviceStateConnecting;
+        uint64_t seconds = timer.value_ms / 1000;
+        if (timer.kind == maomi::ForegroundTimerKind::kCountdown && timer.value_ms % 1000 != 0) {
+            ++seconds;
+        }
+        const int32_t displayed_seconds =
+            timer.active && !conversation_visible ? static_cast<int32_t>(seconds) : -1;
+        const bool paused = timer.active && timer.state == maomi::TimingState::kPaused;
+        if (timer.id == maomi_displayed_countdown_id_ &&
+            displayed_seconds == maomi_displayed_countdown_seconds_ &&
+            paused == maomi_displayed_timer_paused_) {
             return;
         }
-        display_->SetCountdownSeconds(seconds);
-        maomi_displayed_countdown_id_ = countdown.id;
-        maomi_displayed_countdown_seconds_ = seconds;
+        display_->SetTimerSeconds(displayed_seconds, paused);
+        maomi_displayed_countdown_id_ = timer.id;
+        maomi_displayed_countdown_seconds_ = displayed_seconds;
+        maomi_displayed_timer_paused_ = paused;
+    }
+
+    void UpdateMaomiCountdownDisplay(uint64_t monotonic_ms) {
+        UpdateMaomiTimerDisplay(monotonic_ms);
     }
 
     void HandleMaomiRemindersOnMainTask(uint64_t monotonic_ms,
@@ -637,6 +824,10 @@ private:
         if (event.state == maomi::ReminderEventState::kNone) {
             return;
         }
+        if (event.kind == maomi::ReminderKind::kCountdown &&
+            event.id == maomi_foreground_countdown_id_) {
+            maomi_foreground_countdown_id_ = 0;
+        }
 
         const auto presentation = maomi::DecideReminderPresentation(event, maomi_high_temperature_);
         if (!presentation.show_animation) {
@@ -654,8 +845,7 @@ private:
         maomi_reminder_remaining_ms_ = kMaomiReminderVisibleDurationMs;
         maomi_reminder_last_update_ms_ = monotonic_ms;
         maomi_reminder_sound_pending_ = presentation.play_sound;
-        maomi_countdown_due_id_ =
-            event.kind == maomi::ReminderKind::kCountdown ? event.id : 0;
+        maomi_countdown_due_id_ = event.kind == maomi::ReminderKind::kCountdown ? event.id : 0;
         TryStartPendingMaomiReminderSound();
         if (presentation.play_sound && !maomi_reminder_sound_pending_ &&
             maomi_local_sound_playback_id_ == 0) {
@@ -676,12 +866,14 @@ private:
         HandleMaomiRemindersOnMainTask(monotonic_ms, pet_snapshot);
         TryStartPendingMaomiReminderSound();
         TryStartPendingMaomiLowBatteryVoice();
-        UpdateMaomiCountdownDisplay(monotonic_ms);
+        TryStartPendingMaomiPetVoice();
+        UpdateMaomiTimerDisplay(monotonic_ms);
         const auto before = maomi_autonomy_.GetSnapshot();
         const maomi::AutonomyInputs inputs = {
             .official_idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle,
-            .higher_priority_active = pet_snapshot.priority >= maomi::PetPriority::kReminder &&
-                                      pet_snapshot.priority < maomi::PetPriority::kAutonomous,
+            .higher_priority_active = HasMaomiForegroundTimer(monotonic_ms) ||
+                                      (pet_snapshot.priority >= maomi::PetPriority::kReminder &&
+                                       pet_snapshot.priority < maomi::PetPriority::kAutonomous),
             .activity = activity,
             .clock = maomi_clock_.GetSnapshot(),
             .charging = pet_snapshot.charging,
@@ -765,6 +957,16 @@ private:
         return result;
     }
 
+    void HandleMaomiButtonPet() {
+        const auto result = HandleMaomiInteraction(maomi::PetAction::kPet);
+        if (result.state != maomi::ToolOperationState::kCompleted &&
+            result.state != maomi::ToolOperationState::kQueued) {
+            return;
+        }
+        maomi_pet_voice_pending_ = true;
+        TryStartPendingMaomiPetVoice();
+    }
+
     maomi::PetToolSnapshot GetMaomiToolSnapshot() const {
         if (!maomi_bond_) {
             return {};
@@ -845,9 +1047,10 @@ private:
                 {
                     .interact =
                         [this](maomi::PetAction action) { return HandleMaomiInteraction(action); },
-                    .start_game = [this](maomi::VoiceGame) {
-                        return HandleMaomiInteraction(maomi::PetAction::kPlay);
-                    },
+                    .start_game =
+                        [this](maomi::VoiceGame) {
+                            return HandleMaomiInteraction(maomi::PetAction::kPlay);
+                        },
                     .get_status = [this]() { return GetMaomiToolSnapshot(); },
                     .set_quiet = [this](bool enabled) { return SetMaomiQuiet(enabled); },
                 });
@@ -856,12 +1059,7 @@ private:
             if (maomi_reminders_) {
                 reminder_dependencies.start_countdown = [this](uint32_t duration_seconds,
                                                                std::string_view label) {
-                    const uint64_t monotonic_ms = MonotonicMs();
-                    ObserveMaomiClockOnMainTask(monotonic_ms);
-                    const auto result = maomi_reminders_->StartCountdown(
-                        duration_seconds, label, ReminderClockAt(monotonic_ms));
-                    UpdateMaomiCountdownDisplay(monotonic_ms);
-                    return result;
+                    return StartMaomiFocusCountdown(duration_seconds, label);
                 };
                 reminder_dependencies.set_alarm = [this](const maomi::DateTime& target,
                                                          std::string_view label) {
@@ -887,9 +1085,12 @@ private:
                 reminder_dependencies.cancel = [this](uint16_t id) {
                     const uint64_t monotonic_ms = MonotonicMs();
                     ObserveMaomiClockOnMainTask(monotonic_ms);
-                    const auto result =
-                        maomi_reminders_->Cancel(id, ReminderClockAt(monotonic_ms));
-                    UpdateMaomiCountdownDisplay(monotonic_ms);
+                    const auto result = maomi_reminders_->Cancel(id, ReminderClockAt(monotonic_ms));
+                    if (result.status == maomi::ReminderStatus::kCancelled &&
+                        id == maomi_foreground_countdown_id_) {
+                        maomi_foreground_countdown_id_ = 0;
+                    }
+                    UpdateMaomiTimerDisplay(monotonic_ms);
                     return result;
                 };
                 reminder_dependencies.list = [this]() {
@@ -899,6 +1100,14 @@ private:
                 };
             }
             maomi::RegisterReminderTools(server, std::move(reminder_dependencies));
+            maomi::RegisterTimingTools(
+                server, {
+                            .start_stopwatch = [this]() { return StartMaomiStopwatch(); },
+                            .control =
+                                [this](maomi::TimerControlAction action) {
+                                    return ControlMaomiForegroundTimer(action);
+                                },
+                        });
             return true;
         } catch (const std::exception& error) {
             ESP_LOGE(TAG, "Failed to register Maomi MCP tools: %s", error.what());
@@ -918,6 +1127,7 @@ private:
                     CancelTrackedMaomiSound();
                 }
                 maomi_pet_core_.Submit(maomi::Event::OfficialStateChanged(official_state));
+                UpdateMaomiTimerDisplay(MonotonicMs());
             });
         }
 
@@ -1050,8 +1260,7 @@ private:
 
         volume_up_button_.OnDoubleClick([this]() {
             power_save_timer_->WakeUp();
-            Application::GetInstance().Schedule(
-                [this]() { HandleMaomiInteraction(maomi::PetAction::kPet); });
+            Application::GetInstance().Schedule([this]() { HandleMaomiButtonPet(); });
         });
 
         volume_up_button_.OnLongPress([this]() {
@@ -1170,11 +1379,11 @@ public:
               .start_local_response = [this]() { return StartMaomiLocalResponse(); },
               .cancel_playback =
                   []() { Application::GetInstance().GetAudioService().ResetDecoder(); },
-              .invoke_official =
-                  [](const std::string& wake_word) {
-                      return Application::GetInstance().TryWakeWordInvokeFromMainTask(wake_word);
+              .start_listening =
+                  []() {
+                      return Application::GetInstance().TryStartDefaultListeningFromMainTask();
                   },
-              .abort_official =
+              .abort_listening =
                   []() {
                       auto& app = Application::GetInstance();
                       if (app.GetDeviceState() == kDeviceStateConnecting) {

@@ -12,7 +12,7 @@ namespace maomi {
 constexpr uint64_t kWakeCooldownMs = 2000;
 constexpr uint64_t kWakePlaybackTimeoutMs = 5000;
 constexpr uint64_t kWakeOutputDrainMs = 80;
-constexpr uint64_t kWakeOfficialStartTimeoutMs = 500;
+constexpr uint64_t kWakeListeningStartTimeoutMs = 500;
 
 enum class WakeHandleResult : uint8_t {
     kPassThrough,
@@ -35,7 +35,7 @@ enum class WakePhase : uint8_t {
     kIdle,
     kPlayingResponse,
     kDrainingOutput,
-    kAwaitingOfficial,
+    kAwaitingListening,
 };
 
 enum class WakeLogEvent : uint8_t {
@@ -44,10 +44,10 @@ enum class WakeLogEvent : uint8_t {
     kDuplicateSuppressed,
     kPlaybackFailed,
     kPlaybackTimedOut,
-    kOfficialInvoked,
-    kOfficialCompleted,
+    kListeningStarted,
+    kListeningCompleted,
     kRecovered,
-    kAbandonedForOfficialState,
+    kAbandonedForDeviceState,
 };
 
 struct WakeSnapshot {
@@ -57,7 +57,7 @@ struct WakeSnapshot {
     uint32_t fallback_count = 0;
     uint32_t duplicate_count = 0;
     uint32_t playback_failure_count = 0;
-    uint32_t official_invoke_count = 0;
+    uint32_t listening_start_count = 0;
     uint32_t recovery_count = 0;
     uint8_t pending_operations = 0;
 };
@@ -66,8 +66,8 @@ struct WakeDependencies {
     std::function<void()> stop_voice_upload;
     std::function<WakePlaybackStart()> start_local_response;
     std::function<void()> cancel_playback;
-    std::function<bool(const std::string&)> invoke_official;
-    std::function<void()> abort_official;
+    std::function<bool()> start_listening;
+    std::function<void()> abort_listening;
     std::function<void()> restore_wake_detection;
     std::function<void(WakeLogEvent, const WakeSnapshot&)> logger;
 };
@@ -92,7 +92,7 @@ public:
     WakeSequence(const WakeSequence&) = delete;
     WakeSequence& operator=(const WakeSequence&) = delete;
 
-    // Runs on the application main task. Passing through preserves the official
+    // Runs on the application main task. Passing through preserves the normal
     // behavior for setup, activation, OTA, and every non-idle state.
     WakeHandleResult HandleWakeWord(const std::string& wake_word, DeviceState state,
                                     uint64_t now_ms);
@@ -106,20 +106,19 @@ private:
     WakeDependencies dependencies_;
     std::atomic<bool> busy_{false};
     WakeSnapshot snapshot_;
-    std::string pending_wake_word_;
     uint64_t last_accepted_ms_ = 0;
     uint64_t phase_started_ms_ = 0;
     uint32_t expected_playback_id_ = 0;
     bool has_last_accepted_ = false;
-    bool official_progress_seen_ = false;
+    bool listening_progress_seen_ = false;
 
     bool IsInCooldown(uint64_t now_ms) const;
     static bool HasElapsed(uint64_t now_ms, uint64_t started_ms, uint64_t duration_ms);
     void SetPhase(WakePhase phase, uint64_t now_ms);
-    void BeginOfficial(uint64_t now_ms, DeviceState state);
-    void CompleteOfficial();
+    void BeginListening(uint64_t now_ms, DeviceState state);
+    void CompleteListening();
     void Recover(DeviceState state);
-    void AbandonForOfficialState();
+    void AbandonForDeviceState();
     void Log(WakeLogEvent event) const;
 };
 

@@ -170,13 +170,13 @@ CountdownPresentation SelectCountdownPresentation(const ReminderList& reminders)
         return {};
     }
 
-    const uint64_t seconds = selected->remaining_ms / 1000 +
-                             (selected->remaining_ms % 1000 == 0 ? 0 : 1);
+    const uint64_t seconds =
+        selected->remaining_ms / 1000 + (selected->remaining_ms % 1000 == 0 ? 0 : 1);
     return {
         .visible = true,
         .id = selected->id,
-        .remaining_seconds = static_cast<uint32_t>(std::min<uint64_t>(
-            seconds, std::numeric_limits<uint32_t>::max())),
+        .remaining_seconds = static_cast<uint32_t>(
+            std::min<uint64_t>(seconds, std::numeric_limits<uint32_t>::max())),
     };
 }
 
@@ -192,6 +192,39 @@ ReminderResult ReminderEngine::StartCountdown(uint32_t duration_seconds, std::st
     auto* entry = FindEntry(result.id);
     entry->deadline_ms = AddMilliseconds(clock.monotonic_ms, duration_seconds * 1000ULL);
     return result;
+}
+
+ReminderResult ReminderEngine::PauseCountdown(uint16_t id, const ClockSnapshot& clock) {
+    auto* entry = FindEntry(id);
+    if (entry == nullptr) {
+        return {.status = ReminderStatus::kNotFound};
+    }
+    if (entry->snapshot.kind != ReminderKind::kCountdown) {
+        return {.status = ReminderStatus::kInvalidArgument};
+    }
+    if (entry->snapshot.paused || entry->deadline_ms <= clock.monotonic_ms) {
+        return {.status = ReminderStatus::kInvalidState};
+    }
+    entry->paused_remaining_ms = entry->deadline_ms - clock.monotonic_ms;
+    entry->snapshot.paused = true;
+    return {.status = ReminderStatus::kAccepted, .id = id, .kind = ReminderKind::kCountdown};
+}
+
+ReminderResult ReminderEngine::ResumeCountdown(uint16_t id, const ClockSnapshot& clock) {
+    auto* entry = FindEntry(id);
+    if (entry == nullptr) {
+        return {.status = ReminderStatus::kNotFound};
+    }
+    if (entry->snapshot.kind != ReminderKind::kCountdown) {
+        return {.status = ReminderStatus::kInvalidArgument};
+    }
+    if (!entry->snapshot.paused || entry->paused_remaining_ms == 0) {
+        return {.status = ReminderStatus::kInvalidState};
+    }
+    entry->deadline_ms = AddMilliseconds(clock.monotonic_ms, entry->paused_remaining_ms);
+    entry->paused_remaining_ms = 0;
+    entry->snapshot.paused = false;
+    return {.status = ReminderStatus::kAccepted, .id = id, .kind = ReminderKind::kCountdown};
 }
 
 ReminderResult ReminderEngine::SetAlarm(const DateTime& target, std::string_view label,
@@ -332,8 +365,10 @@ ReminderList ReminderEngine::List(const ClockSnapshot& clock) const {
         auto& item = result.items[result.count++];
         item = entry.snapshot;
         if (!item.persistent) {
-            item.remaining_ms =
-                entry.deadline_ms > clock.monotonic_ms ? entry.deadline_ms - clock.monotonic_ms : 0;
+            item.remaining_ms = item.paused ? entry.paused_remaining_ms
+                                            : (entry.deadline_ms > clock.monotonic_ms
+                                                   ? entry.deadline_ms - clock.monotonic_ms
+                                                   : 0);
         } else if (clock.valid && item.next_wall_time_seconds > now_seconds) {
             item.remaining_ms =
                 static_cast<uint64_t>(item.next_wall_time_seconds - now_seconds) * 1000;
@@ -759,6 +794,9 @@ ReminderEvent ReminderEngine::Update(const ReminderTick& tick) {
     const int64_t now_seconds = tick.clock.valid ? CivilSeconds(tick.clock.local_time) : -1;
     for (auto& entry : entries_) {
         if (!entry.active) {
+            continue;
+        }
+        if (entry.snapshot.kind == ReminderKind::kCountdown && entry.snapshot.paused) {
             continue;
         }
 

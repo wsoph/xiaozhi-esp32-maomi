@@ -19,10 +19,7 @@ PetAction ParseAction(const std::string& action) {
     if (action == "feed") {
         return PetAction::kFeed;
     }
-    if (action == "play") {
-        return PetAction::kPlay;
-    }
-    throw std::runtime_error("Unsupported pet action; allowed values are pet, feed, and play");
+    throw std::runtime_error("Unsupported pet action; allowed values are pet and feed");
 }
 
 VoiceGame ParseVoiceGame(const std::string& game) {
@@ -88,17 +85,23 @@ uint8_t VoiceGameRoundLimit(VoiceGame game) {
 const char* VoiceGameInstruction(VoiceGame game) {
     switch (game) {
         case VoiceGame::kCatGuess:
-            return "请玩家在心里想一个常见动物、食物或物品，想好后说想好了。收到确认后逐个提问，最多8问；第8问后必须给出最终猜测。玩家提前揭晓时自然收尾。";
+            return "请玩家在心里想一个常见动物、食物或物品，想好后说想好了。收到确认后逐个提问，最"
+                   "多8问；第8问后必须给出最终猜测。玩家提前揭晓时自然收尾。";
         case VoiceGame::kMiniAdventure:
-            return "用一两句话创建轻松安全的冒险并给出第1次选择。每次根据玩家行动推进剧情并给2到3个选择，也接受自由行动；第4次行动后给出完整结局。";
+            return "用一两句话创建轻松安全的冒险并给出第1次选择。每次根据玩家行动推进剧情并给2到3个"
+                   "选择，也接受自由行动；第4次行动后给出完整结局。";
         case VoiceGame::kStoryChain:
-            return "先说一两句轻松安全的故事开头，请玩家续写一两句。每轮承接玩家内容再续写一两句；玩家第6次续写后给故事一个完整有趣的结尾，不再开启新情节。";
+            return "先说一两句轻松安全的故事开头，请玩家续写一两句。每轮承接玩家内容再续写一两句；"
+                   "玩家第6次续写后给故事一个完整有趣的结尾，不再开启新情节。";
         case VoiceGame::kCatDetective:
-            return "创建一个生活化、安全且答案明确的小谜案，先给第1条线索并请玩家推理。全局安排3条核心线索，最多2次提示；最多6个玩家推理回合，第6回合后揭晓答案并解释线索。";
+            return "创建一个生活化、安全且答案明确的小谜案，先给第1条线索并请玩家推理。全局安排3条"
+                   "核心线索，最多2次提示；最多6个玩家推理回合，第6回合后揭晓答案并解释线索。";
         case VoiceGame::kMemorySuitcase:
-            return "先说旅行箱里装入1件常见物品，请玩家按顺序复述全部物品并新增1件。每轮先核对再完整复述新清单；说错时温和揭晓，清单达到8件物品时祝贺并结束。";
+            return "先说旅行箱里装入1件常见物品，请玩家按顺序复述全部物品并新增1件。每轮先核对再完"
+                   "整复述新清单；说错时温和揭晓，清单达到8件物品时祝贺并结束。";
         case VoiceGame::kQuickQuiz:
-            return "进行6道轻松快问快答，每次只出1题，可混合兴趣、常识和简单学习题，并根据表现微调难度。每题作答后立即简短反馈并出下一题；第6题后报出成绩并结束。";
+            return "进行6道轻松快问快答，每次只出1题，可混合兴趣、常识和简单学习题，并根据表现微调"
+                   "难度。每题作答后立即简短反馈并出下一题；第6题后报出成绩并结束。";
     }
     return nullptr;
 }
@@ -426,6 +429,9 @@ void ValidateSuccessfulResult(const ReminderResult& result, ReminderStatus expec
     if (result.status == ReminderStatus::kInvalidArgument) {
         throw std::runtime_error("Reminder arguments were rejected by the device");
     }
+    if (result.status == ReminderStatus::kInvalidState) {
+        throw std::runtime_error("A countdown or stopwatch is already active");
+    }
     if (result.status == ReminderStatus::kCapacityReached) {
         throw std::runtime_error("Reminder capacity has been reached");
     }
@@ -462,6 +468,7 @@ void ValidateSnapshot(const ReminderSnapshot& snapshot) {
     if (snapshot.id == 0 || ReminderKindText(snapshot.kind) == nullptr ||
         ReminderPhaseText(snapshot.phase) == nullptr ||
         (snapshot.persistent != (snapshot.kind == ReminderKind::kAlarm || interval)) ||
+        (snapshot.paused && snapshot.kind != ReminderKind::kCountdown) ||
         (pomodoro && snapshot.phase == ReminderPhase::kNone) ||
         (!pomodoro && snapshot.phase != ReminderPhase::kNone) ||
         (snapshot.kind == ReminderKind::kAlarm && snapshot.next_wall_time_seconds <= 0) ||
@@ -507,6 +514,8 @@ std::string SnapshotJson(const ReminderSnapshot& snapshot) {
     json += ReminderKindText(snapshot.kind);
     json += "\",\"persistent\":";
     json += BoolText(snapshot.persistent);
+    json += ",\"paused\":";
+    json += BoolText(snapshot.paused);
     json += ",\"label\":\"" + JsonEscape(SnapshotLabel(snapshot)) + "\"";
     json += ",\"remaining_seconds\":" +
             std::to_string(snapshot.remaining_ms / 1000 + (snapshot.remaining_ms % 1000 != 0));
@@ -574,13 +583,80 @@ std::string CancelledReminderJson(const ReminderResult& result) {
     return json;
 }
 
+TimerControlAction ParseTimerControlAction(const std::string& action) {
+    if (action == "pause") {
+        return TimerControlAction::kPause;
+    }
+    if (action == "resume") {
+        return TimerControlAction::kResume;
+    }
+    if (action == "stop") {
+        return TimerControlAction::kStop;
+    }
+    if (action == "reset") {
+        return TimerControlAction::kReset;
+    }
+    throw std::runtime_error(
+        "Unsupported timer action; allowed values are pause, resume, stop, and reset");
+}
+
+const char* TimerKindText(ForegroundTimerKind kind) {
+    switch (kind) {
+        case ForegroundTimerKind::kCountdown:
+            return "countdown";
+        case ForegroundTimerKind::kStopwatch:
+            return "stopwatch";
+    }
+    return nullptr;
+}
+
+const char* TimingStateText(TimingState state) {
+    switch (state) {
+        case TimingState::kStopped:
+            return "stopped";
+        case TimingState::kRunning:
+            return "running";
+        case TimingState::kPaused:
+            return "paused";
+    }
+    return nullptr;
+}
+
+std::string TimingJson(const TimingToolResult& result) {
+    const char* kind = TimerKindText(result.timer.kind);
+    const char* state = TimingStateText(result.timer.state);
+    const bool active_state =
+        result.timer.state == TimingState::kRunning || result.timer.state == TimingState::kPaused;
+    if (result.status != TimingStatus::kAccepted) {
+        throw std::runtime_error("Timer operation is invalid for the current foreground timer");
+    }
+    if (kind == nullptr || state == nullptr || result.timer.active != active_state ||
+        (result.timer.kind == ForegroundTimerKind::kCountdown && result.timer.id == 0)) {
+        throw std::runtime_error("Timer operation returned an invalid device snapshot");
+    }
+
+    uint64_t seconds = result.timer.value_ms / 1000;
+    if (result.timer.kind == ForegroundTimerKind::kCountdown && result.timer.value_ms % 1000 != 0) {
+        ++seconds;
+    }
+    std::string json = "{\"ok\":true,\"status\":\"accepted\",\"timer\":{";
+    json += "\"type\":\"";
+    json += kind;
+    json += "\",\"state\":\"";
+    json += state;
+    json += "\",\"seconds\":" + std::to_string(seconds);
+    json += ",\"id\":" + std::to_string(result.timer.id);
+    json += "}}";
+    return json;
+}
+
 }  // namespace
 
 void RegisterPetTools(McpServer& server, PetToolDependencies dependencies) {
     auto interact = std::move(dependencies.interact);
     server.AddTool(
         kPetInteractToolName,
-        "当主人明确要摸小猫咪、喂零食或陪玩时必须调用。action 只能是 pet、feed、play；"
+        "当主人明确要摸小猫咪或喂零食时必须调用。action 只能是 pet 或 feed；"
         "只有工具成功返回后才能说互动已经执行，queued 表示设备已排队而不是已经展示完成。",
         PropertyList({Property("action", kPropertyTypeString)}),
         [interact = std::move(interact)](const PropertyList& properties) -> ReturnValue {
@@ -596,11 +672,12 @@ void RegisterPetTools(McpServer& server, PetToolDependencies dependencies) {
     auto start_game = std::move(dependencies.start_game);
     server.AddTool(
         kPetStartGameToolName,
-        "当主人说陪我玩、我们一起玩或明确要玩语言游戏时必须调用。game 只能是 "
+        "仅当主人明确说出具体游戏名称后调用。只说想玩游戏时先说出可选菜单并等待选择；"
+        "只说陪伴或普通玩耍不调用任何互动工具。"
+        "game 只能是 "
         "cat_guess、mini_adventure、story_chain、cat_detective、memory_suitcase、quick_quiz；"
-        "未指定时从六种中选择并尽量避免连续重复。成功后按返回的 instruction 进行1到3分钟的"
-        "对话游戏，一局内不得再次调用。主人说结束游戏、不玩了或同义表达时立即结束，不继续追问。"
-        "普通摸摸、喂食或只播放玩耍动画仍使用 self.pet.interact。",
+        "成功后按返回的 instruction 进行1到3分钟的对话游戏，一局内不得再次调用。"
+        "主人说结束游戏、不玩了或同义表达时立即结束，不继续追问。",
         PropertyList({Property("game", kPropertyTypeString)}),
         [start_game = std::move(start_game)](const PropertyList& properties) -> ReturnValue {
             if (!start_game) {
@@ -758,6 +835,40 @@ void RegisterReminderTools(McpServer& server, ReminderToolDependencies dependenc
                 throw std::runtime_error("Reminder ID must be between 1 and 65535");
             }
             return CancelledReminderJson(cancel(static_cast<uint16_t>(id)));
+        });
+}
+
+void RegisterTimingTools(McpServer& server, TimingToolDependencies dependencies) {
+    auto start_stopwatch = std::move(dependencies.start_stopwatch);
+    server.AddTool(
+        kStopwatchToolName,
+        "Start one local stopwatch at zero. Reject the request if a countdown or stopwatch is "
+        "already active.",
+        PropertyList(),
+        [start_stopwatch = std::move(start_stopwatch)](const PropertyList&) -> ReturnValue {
+            if (!start_stopwatch) {
+                throw std::runtime_error("Stopwatch is unavailable on this device");
+            }
+            const auto result = start_stopwatch();
+            if (result.timer.kind != ForegroundTimerKind::kStopwatch ||
+                result.timer.state != TimingState::kRunning) {
+                throw std::runtime_error("Stopwatch start returned an invalid device snapshot");
+            }
+            return TimingJson(result);
+        });
+
+    auto control = std::move(dependencies.control);
+    server.AddTool(
+        kTimerControlToolName,
+        "Control the one active countdown or stopwatch. action must be pause, resume, stop, or "
+        "reset; reset is valid only for a stopwatch.",
+        PropertyList({Property("action", kPropertyTypeString)}),
+        [control = std::move(control)](const PropertyList& properties) -> ReturnValue {
+            if (!control) {
+                throw std::runtime_error("Timer control is unavailable on this device");
+            }
+            return TimingJson(
+                control(ParseTimerControlAction(properties["action"].value<std::string>())));
         });
 }
 

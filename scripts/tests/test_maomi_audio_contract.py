@@ -78,12 +78,37 @@ class MaomiAudioContractTest(unittest.TestCase):
         self.assertIn("HandlePlaybackFinished", source)
         self.assertNotIn("GetPlaybackGeneration()", source)
 
-    def test_maomi_official_invoke_runs_directly_on_the_main_task(self):
+    def test_maomi_direct_listening_runs_on_the_main_task(self):
         application_header = APPLICATION_HEADER.read_text(encoding="utf-8")
         board_source = BOARD_SOURCE.read_text(encoding="utf-8")
 
-        self.assertIn("TryWakeWordInvokeFromMainTask", application_header)
-        self.assertIn("TryWakeWordInvokeFromMainTask(wake_word)", board_source)
+        self.assertIn("TryStartDefaultListeningFromMainTask", application_header)
+        self.assertIn("TryStartDefaultListeningFromMainTask()", board_source)
+        self.assertNotIn("TryWakeWordInvokeFromMainTask(wake_word)", board_source)
+
+    def test_maomi_wake_records_activity_without_pet_expression(self):
+        source = BOARD_SOURCE.read_text(encoding="utf-8")
+        start = source.index("app.SetWakeWordInterceptor")
+        end = source.index("app.SetPlaybackFinishedObserver", start)
+        interceptor = source[start:end]
+
+        self.assertIn("ActivitySource::kWakeWord", interceptor)
+        self.assertNotIn("Event::UserWake()", interceptor)
+
+    def test_direct_listening_entry_skips_wake_payload_and_popup(self):
+        application_header = APPLICATION_HEADER.read_text(encoding="utf-8")
+        source = APPLICATION_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("TryStartDefaultListeningFromMainTask", application_header)
+        start = source.index("bool Application::TryStartDefaultListeningFromMainTask()")
+        end = source.index("bool Application::TryWakeWordInvoke", start)
+        body = source[start:end]
+        self.assertIn("GetDefaultListeningMode()", body)
+        self.assertIn("ContinueOpenAudioChannel", body)
+        self.assertNotIn("EncodeWakeWord", body)
+        self.assertNotIn("SendWakeWordDetected", body)
+        self.assertNotIn("OGG_POPUP", body)
+        self.assertGreaterEqual(body.count("EnableWakeWordDetection(true)"), 3)
 
     def test_busy_wake_sequence_blocks_chat_button_before_dialog_start(self):
         source = BOARD_SOURCE.read_text(encoding="utf-8")

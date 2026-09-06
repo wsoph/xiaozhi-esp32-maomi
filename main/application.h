@@ -115,6 +115,9 @@ public:
     void WakeWordInvoke(const std::string& wake_word);
     bool TryWakeWordInvoke(const std::string& wake_word);
     bool TryWakeWordInvokeFromMainTask(const std::string& wake_word);
+    // Starts the default listening mode without wake-word audio, notification, or popup playback.
+    // Must be called from the application main task while idle.
+    bool TryStartDefaultListeningFromMainTask();
     void SetWakeWordInterceptor(std::function<bool(const std::string&)> interceptor);
     void SetPlaybackFinishedObserver(std::function<void(uint32_t)> observer);
     void SetBoardPollObserver(std::function<void()> observer);

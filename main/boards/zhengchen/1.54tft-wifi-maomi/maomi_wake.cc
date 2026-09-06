@@ -9,6 +9,7 @@ WakeSequence::WakeSequence(WakeDependencies dependencies)
 
 WakeHandleResult WakeSequence::HandleWakeWord(const std::string& wake_word, DeviceState state,
                                               uint64_t now_ms) {
+    (void)wake_word;
     if (state != kDeviceStateIdle) {
         return WakeHandleResult::kPassThrough;
     }
@@ -29,7 +30,7 @@ WakeHandleResult WakeSequence::HandleWakeWord(const std::string& wake_word, Devi
     }
 
     if (!dependencies_.stop_voice_upload || !dependencies_.start_local_response ||
-        !dependencies_.invoke_official || !dependencies_.restore_wake_detection) {
+        !dependencies_.start_listening || !dependencies_.restore_wake_detection) {
         if (dependencies_.restore_wake_detection) {
             dependencies_.restore_wake_detection();
         }
@@ -38,8 +39,7 @@ WakeHandleResult WakeSequence::HandleWakeWord(const std::string& wake_word, Devi
 
     has_last_accepted_ = true;
     last_accepted_ms_ = now_ms;
-    pending_wake_word_ = wake_word;
-    official_progress_seen_ = false;
+    listening_progress_seen_ = false;
     expected_playback_id_ = 0;
     ++snapshot_.sequence_id;
     ++snapshot_.started_count;
@@ -51,7 +51,7 @@ WakeHandleResult WakeSequence::HandleWakeWord(const std::string& wake_word, Devi
     if (playback.result == WakePlaybackResult::kFallbackCompleted) {
         ++snapshot_.fallback_count;
         Log(WakeLogEvent::kFallbackCompleted);
-        BeginOfficial(now_ms, state);
+        BeginListening(now_ms, state);
     } else if (playback.playback_id == 0) {
         ++snapshot_.playback_failure_count;
         Log(WakeLogEvent::kPlaybackFailed);
@@ -74,7 +74,7 @@ void WakeSequence::HandlePlaybackFinished(uint64_t now_ms, DeviceState state,
     }
     expected_playback_id_ = 0;
     if (state != kDeviceStateIdle) {
-        AbandonForOfficialState();
+        AbandonForDeviceState();
         return;
     }
     SetPhase(WakePhase::kDrainingOutput, now_ms);
@@ -99,34 +99,34 @@ void WakeSequence::Poll(uint64_t now_ms, DeviceState state, bool playback_idle) 
 
     if (snapshot_.phase == WakePhase::kDrainingOutput) {
         if (state != kDeviceStateIdle) {
-            AbandonForOfficialState();
+            AbandonForDeviceState();
         } else if (HasElapsed(now_ms, phase_started_ms_, kWakeOutputDrainMs)) {
-            BeginOfficial(now_ms, state);
+            BeginListening(now_ms, state);
         }
         return;
     }
 
-    if (snapshot_.phase != WakePhase::kAwaitingOfficial) {
+    if (snapshot_.phase != WakePhase::kAwaitingListening) {
         return;
     }
 
     if (state == kDeviceStateConnecting) {
-        official_progress_seen_ = true;
-        if (HasElapsed(now_ms, phase_started_ms_, kWakeOfficialStartTimeoutMs)) {
-            if (dependencies_.abort_official) {
-                dependencies_.abort_official();
+        listening_progress_seen_ = true;
+        if (HasElapsed(now_ms, phase_started_ms_, kWakeListeningStartTimeoutMs)) {
+            if (dependencies_.abort_listening) {
+                dependencies_.abort_listening();
             }
             Recover(kDeviceStateIdle);
         }
-    } else if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
-        CompleteOfficial();
+    } else if (state == kDeviceStateListening) {
+        CompleteListening();
     } else if (state == kDeviceStateIdle) {
-        if (official_progress_seen_ ||
-            HasElapsed(now_ms, phase_started_ms_, kWakeOfficialStartTimeoutMs)) {
+        if (listening_progress_seen_ ||
+            HasElapsed(now_ms, phase_started_ms_, kWakeListeningStartTimeoutMs)) {
             Recover(state);
         }
     } else {
-        AbandonForOfficialState();
+        AbandonForDeviceState();
     }
 }
 
@@ -151,27 +151,25 @@ void WakeSequence::SetPhase(WakePhase phase, uint64_t now_ms) {
     busy_.store(phase != WakePhase::kIdle, std::memory_order_release);
 }
 
-void WakeSequence::BeginOfficial(uint64_t now_ms, DeviceState state) {
-    SetPhase(WakePhase::kAwaitingOfficial, now_ms);
-    ++snapshot_.official_invoke_count;
-    Log(WakeLogEvent::kOfficialInvoked);
-    if (!dependencies_.invoke_official(pending_wake_word_)) {
+void WakeSequence::BeginListening(uint64_t now_ms, DeviceState state) {
+    SetPhase(WakePhase::kAwaitingListening, now_ms);
+    ++snapshot_.listening_start_count;
+    Log(WakeLogEvent::kListeningStarted);
+    if (!dependencies_.start_listening()) {
         Recover(state);
     }
 }
 
-void WakeSequence::CompleteOfficial() {
-    pending_wake_word_.clear();
+void WakeSequence::CompleteListening() {
     expected_playback_id_ = 0;
-    official_progress_seen_ = false;
+    listening_progress_seen_ = false;
     SetPhase(WakePhase::kIdle, phase_started_ms_);
-    Log(WakeLogEvent::kOfficialCompleted);
+    Log(WakeLogEvent::kListeningCompleted);
 }
 
 void WakeSequence::Recover(DeviceState state) {
-    pending_wake_word_.clear();
     expected_playback_id_ = 0;
-    official_progress_seen_ = false;
+    listening_progress_seen_ = false;
     SetPhase(WakePhase::kIdle, phase_started_ms_);
     ++snapshot_.recovery_count;
     if (state == kDeviceStateIdle && dependencies_.restore_wake_detection) {
@@ -180,12 +178,11 @@ void WakeSequence::Recover(DeviceState state) {
     Log(WakeLogEvent::kRecovered);
 }
 
-void WakeSequence::AbandonForOfficialState() {
-    pending_wake_word_.clear();
+void WakeSequence::AbandonForDeviceState() {
     expected_playback_id_ = 0;
-    official_progress_seen_ = false;
+    listening_progress_seen_ = false;
     SetPhase(WakePhase::kIdle, phase_started_ms_);
-    Log(WakeLogEvent::kAbandonedForOfficialState);
+    Log(WakeLogEvent::kAbandonedForDeviceState);
 }
 
 void WakeSequence::Log(WakeLogEvent event) const {

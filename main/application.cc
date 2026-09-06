@@ -1277,6 +1277,41 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
 
 void Application::WakeWordInvoke(const std::string& wake_word) { TryWakeWordInvoke(wake_word); }
 
+bool Application::TryStartDefaultListeningFromMainTask() {
+    if (GetDeviceState() != kDeviceStateIdle) {
+        return false;
+    }
+    if (!protocol_) {
+        audio_service_.EnableWakeWordDetection(true);
+        return false;
+    }
+
+    const auto mode = GetDefaultListeningMode();
+    play_popup_on_listening_ = false;
+    if (protocol_->IsAudioChannelOpened()) {
+        SetListeningMode(mode);
+        if (GetDeviceState() == kDeviceStateListening) {
+            return true;
+        }
+        audio_service_.EnableWakeWordDetection(true);
+        return false;
+    }
+
+    if (!SetDeviceState(kDeviceStateConnecting)) {
+        audio_service_.EnableWakeWordDetection(true);
+        return false;
+    }
+    try {
+        Schedule([this, mode]() { ContinueOpenAudioChannel(mode); });
+    } catch (const std::bad_alloc&) {
+        ESP_LOGE(TAG, "Failed to schedule direct listening connection");
+        SetDeviceState(kDeviceStateIdle);
+        audio_service_.EnableWakeWordDetection(true);
+        return false;
+    }
+    return true;
+}
+
 bool Application::TryWakeWordInvokeFromMainTask(const std::string& wake_word) {
     if (!protocol_ || GetDeviceState() != kDeviceStateIdle) {
         return false;
