@@ -11,6 +11,7 @@ constexpr int64_t kDay = 86400;
 // Keep the persisted layout and legacy stage range readable.
 constexpr uint8_t kMasteredStage = 3;
 constexpr uint32_t kMagic = 0x4d4c0001;
+constexpr uint32_t kLifeMagic = 0x4d4c0002;
 
 struct Writer {
     std::vector<uint8_t> data;
@@ -57,7 +58,7 @@ struct Reader {
 
 std::vector<uint8_t> Encode(const LearningState& s) {
     Writer w;
-    w.Number(kMagic, 4);
+    w.Number(kLifeMagic, 4);
     w.Number(s.revision, 4);
     w.Text(s.name);
     for (auto n : {s.born, s.observed, s.decay_at, s.happy_until})
@@ -75,6 +76,16 @@ std::vector<uint8_t> Encode(const LearningState& s) {
     w.Number(s.questions.size(), 1);
     for (const auto& q : s.questions)
         w.Text(q);
+    const auto& life = s.life;
+    for (auto n :
+         {life.updated_at, life.sleep_until, life.awake_until, life.last_play, life.last_pet})
+        w.Number(n);
+    for (auto n : {uint32_t(life.supply_date), uint32_t(life.last_pet_date),
+                   uint32_t(life.last_play_date), life.pet_days, life.play_days, life.owned})
+        w.Number(n, 4);
+    for (auto n :
+         {life.happiness, life.energy, life.hydration, life.health, life.outfit, life.room})
+        w.Number(n, 1);
     w.Number(s.history.size(), 2);
     for (const auto& p : s.history) {
         w.Text(p.word);
@@ -90,7 +101,8 @@ std::vector<uint8_t> Encode(const LearningState& s) {
 LearningState Decode(const std::vector<uint8_t>& data) {
     Reader r{data};
     LearningState s;
-    if (r.Number(4) != kMagic)
+    const auto schema = r.Number(4);
+    if (schema != kMagic && schema != kLifeMagic)
         throw std::runtime_error("unsupported_schema");
     s.revision = r.Number(4);
     s.name = r.Text(48);
@@ -126,6 +138,34 @@ LearningState Decode(const std::vector<uint8_t>& data) {
         throw std::runtime_error("invalid_session");
     while (count--)
         s.questions.push_back(r.Text(32));
+    auto& life = s.life;
+    life.updated_at = s.observed;
+    if (schema == kLifeMagic) {
+        life.updated_at = r.Number();
+        life.sleep_until = r.Number();
+        life.awake_until = r.Number();
+        life.last_play = r.Number();
+        life.last_pet = r.Number();
+        life.supply_date = r.Number(4);
+        life.last_pet_date = r.Number(4);
+        life.last_play_date = r.Number(4);
+        life.pet_days = r.Number(4);
+        life.play_days = r.Number(4);
+        life.owned = r.Number(4);
+        life.happiness = r.Number(1);
+        life.energy = r.Number(1);
+        life.hydration = r.Number(1);
+        life.health = r.Number(1);
+        life.outfit = r.Number(1);
+        life.room = r.Number(1);
+        if (life.updated_at < 0 || life.updated_at > s.observed || life.sleep_until < 0 ||
+            life.awake_until < 0 || life.last_play < 0 || life.last_pet < 0 ||
+            life.happiness > 100 || life.energy > 100 || life.hydration > 100 || life.health < 40 ||
+            life.health > 100 || life.owned > 63 || life.outfit > 2 || life.room > 2 ||
+            (life.outfit && !(life.owned & (life.outfit == 1 ? 4 : 8))) ||
+            (life.room && !(life.owned & (life.room == 1 ? 16 : 32))))
+            throw std::runtime_error("invalid_life_state");
+    }
     count = r.Number(2);
     if (count > 2000)
         throw std::runtime_error("invalid_history");
@@ -191,7 +231,7 @@ LearningResult Error(const char* error) { return {false, error, 0}; }
 
 bool LearningTime::Valid() const {
     return epoch >= 1704067200 && epoch < 4102444800 && date >= 20240101 && date <= 20991231 &&
-           month >= 1 && month <= 12 && day >= 1 && day <= 31;
+           month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour >= 0 && hour <= 23;
 }
 
 uint32_t LearningEngine::Checksum(const std::vector<uint8_t>& data) {
@@ -309,6 +349,7 @@ LearningResult LearningEngine::Commit(LearningState next, uint32_t award) {
 void LearningEngine::Advance(LearningState& s, LearningTime now) {
     if (!now.Valid() || s.name.empty())
         return;
+    AdvancePetLife(s.life, now.epoch, now.hour, s.satiety, s.decay_at, s.poop);
     s.observed = std::max(s.observed, now.epoch);
     constexpr int64_t step = kDay / 50;
     const auto elapsed = std::min<int64_t>(3 * kDay, std::max<int64_t>(0, now.epoch - s.decay_at));
@@ -348,13 +389,35 @@ bool LearningEngine::IsBirthday(LearningTime now) const {
 std::string LearningEngine::Mood(LearningTime now) const {
     auto current = state_;
     Advance(current, now);
+    if (current.life.health < 60)
+        return "sick";
+    if (IsSleeping(now))
+        return "sleeping";
     if (current.satiety < 25)
         return "hungry";
     if (current.poop)
         return "dirty";
+    if (current.life.hydration < 25)
+        return "thirsty";
+    if (current.life.energy < 25)
+        return "tired";
+    if (current.life.happiness < 30)
+        return "bored";
     if (now.Valid() && now.epoch < current.happy_until)
         return "happy";
     return "content";
+}
+
+PetLifeState LearningEngine::GetLife(LearningTime now) const {
+    auto current = state_;
+    Advance(current, now);
+    return current.life;
+}
+
+bool LearningEngine::IsSleeping(LearningTime now) const {
+    if (state_.name.empty() || !now.Valid())
+        return false;
+    return PetSleeping(state_.life, std::max(now.epoch, state_.observed), now.hour);
 }
 
 LearningResult LearningEngine::Observe(LearningTime now) {
@@ -384,6 +447,7 @@ LearningResult LearningEngine::Adopt(const std::string& name, LearningTime now, 
     next.birthday = now.date;
     next.observed = now.epoch;
     next.decay_at = now.epoch;
+    next.life.updated_at = now.epoch;
     next.date = now.date;
     next.food = 6;
     next.litter = 3;
@@ -397,6 +461,7 @@ LearningResult LearningEngine::Care(const std::string& action, LearningTime now,
         return check;
     auto next = state_;
     Advance(next, now);
+    auto& life = next.life;
     if (action == "feed" || action == "snack") {
         auto& stock = action == "feed" ? next.food : next.snacks;
         if (!stock)
@@ -420,10 +485,39 @@ LearningResult LearningEngine::Care(const std::string& action, LearningTime now,
         --next.litter;
         next.poop = 0;
         next.cleaned_today = true;
-    } else if (action != "pet" && action != "play")
+    } else if (action == "water") {
+        if (life.hydration == 100)
+            return Error("not_thirsty");
+        life.hydration = 100;
+    } else if (action == "doctor") {
+        if (life.health == 100)
+            return Error("already_healthy");
+        life.health = 100;
+    } else if (action == "sleep") {
+        life.sleep_until = next.observed + 8 * 3600;
+        life.awake_until = 0;
+    } else if (action == "wake") {
+        life.sleep_until = 0;
+        life.awake_until = next.observed + 2 * 3600;
+    } else if (action == "supplies") {
+        if (life.supply_date >= next.date)
+            return Error("supplies_claimed");
+        if (next.food >= 2 && next.litter >= 1)
+            return Error("already_stocked");
+        next.food = std::max<uint16_t>(next.food, 2);
+        next.litter = std::max<uint16_t>(next.litter, 1);
+        life.supply_date = next.date;
+    } else if (action == "pet" || action == "play") {
+        if (life.last_pet && next.observed - life.last_pet < 300)
+            return {true, {}, 0};
+        life.last_pet = next.observed;
+        life.happiness = PetMeter(life.happiness + 10);
+        if (life.last_pet_date < next.date) {
+            life.last_pet_date = next.date;
+            ++life.pet_days;
+        }
+    } else
         return Error("invalid_action");
-    else if (next.happy_until > next.observed + 300)
-        return {true, {}, 0};
     next.happy_until = std::max(next.observed, now.epoch) + 600;
     if (next.feeds_today == 2 && next.cleaned_today && !next.care_counted) {
         next.care_counted = true;
@@ -441,6 +535,22 @@ LearningResult LearningEngine::Buy(const std::string& item, int quantity, Learni
         return Error("invalid_quantity");
     auto next = state_;
     Advance(next, now);
+    const auto* product = FindPetItem(item);
+    if (!product)
+        return Error("unknown_item");
+    if (next.care_days < product->care_days)
+        return Error("growth_locked");
+    if (product->mask) {
+        if (quantity != 1)
+            return Error("durable_quantity_one");
+        if (next.life.owned & product->mask)
+            return Error("already_owned");
+        if (next.coins < product->price)
+            return Error("insufficient_coins");
+        next.coins -= product->price;
+        next.life.owned |= product->mask;
+        return Commit(std::move(next));
+    }
     uint16_t* stock = nullptr;
     int price = 0;
     if (item == "food") {
@@ -460,6 +570,46 @@ LearningResult LearningEngine::Buy(const std::string& item, int quantity, Learni
         return Error("insufficient_coins");
     next.coins -= quantity * price;
     *stock += quantity;
+    return Commit(std::move(next));
+}
+
+LearningResult LearningEngine::Use(const std::string& item, LearningTime now, uint32_t revision) {
+    auto check = Check(now, revision);
+    if (!check.ok)
+        return check;
+    auto next = state_;
+    Advance(next, now);
+    auto& life = next.life;
+    if (item == "no_outfit")
+        life.outfit = 0;
+    else if (item == "default_room")
+        life.room = 0;
+    else {
+        const auto* product = FindPetItem(item);
+        if (!product || !product->mask)
+            return Error("unknown_item");
+        if (!(life.owned & product->mask))
+            return Error("not_owned");
+        if (product->kind == PetItemKind::kToy) {
+            if (IsSleeping(now))
+                return Error("pet_sleeping");
+            if (life.energy < 10)
+                return Error("too_tired");
+            if (life.last_play && next.observed - life.last_play < 300)
+                return Error("play_cooldown");
+            life.energy -= 5;
+            life.happiness = PetMeter(life.happiness + (product->code == 1 ? 15 : 25));
+            life.last_play = next.observed;
+            next.happy_until = next.observed + 600;
+            if (life.last_play_date < next.date) {
+                life.last_play_date = next.date;
+                ++life.play_days;
+            }
+        } else if (product->kind == PetItemKind::kOutfit)
+            life.outfit = product->code;
+        else if (product->kind == PetItemKind::kRoom)
+            life.room = product->code;
+    }
     return Commit(std::move(next));
 }
 
@@ -557,7 +707,7 @@ LearningResult LearningEngine::Start(bool chinese_prompt, LearningTime now, uint
     if (!check.ok)
         return check;
     if (state_.active)
-        return {true, {}, 0};
+        return IsSleeping(now) ? Care("wake", now, revision) : LearningResult{true, {}, 0};
     if (book_.empty())
         return Error("no_words");
     auto next = state_;
@@ -589,6 +739,8 @@ LearningResult LearningEngine::Start(bool chinese_prompt, LearningTime now, uint
     next.active = true;
     next.chinese_prompt = chinese_prompt;
     next.session_coins = 0;
+    next.life.sleep_until = 0;
+    next.life.awake_until = next.observed + 2 * 3600;
     return Commit(std::move(next));
 }
 
@@ -602,6 +754,8 @@ LearningResult LearningEngine::Answer(uint32_t session, uint8_t question,
         return check;
     if (!state_.active || session != state_.session || question != state_.question)
         return Error("stale_question");
+    if (IsSleeping(now))
+        return Error("pet_sleeping");
     if (verdict == "unclear")
         return {true, {}, 0};
     if (verdict != "correct" && verdict != "hinted" && verdict != "wrong" &&

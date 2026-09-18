@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../1.54tft-wifi/zhengchen_lcd_display.h"
+#include "maomi_pet_home.h"
 
 LV_FONT_DECLARE(lv_font_montserrat_48);
 
@@ -18,6 +19,7 @@ private:
     lv_obj_t* countdown_pause_left_ = nullptr;
     lv_obj_t* countdown_pause_right_ = nullptr;
 #ifdef CONFIG_MAOMI_LEARNING
+    MaomiPetHome pet_home_;
     lv_obj_t* learning_popup_ = nullptr;
     lv_obj_t* learning_word_ = nullptr;
     lv_obj_t* learning_hint_ = nullptr;
@@ -180,6 +182,11 @@ public:
             lv_obj_move_foreground(learning_hint_);
         } else
             lv_obj_add_flag(learning_hint_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void SetPetHome(bool visible, const maomi::PetHomeView& view, uint64_t now_ms) {
+        DisplayLockGuard lock(this);
+        pet_home_.Update(visible, view, now_ms);
     }
 #endif
 

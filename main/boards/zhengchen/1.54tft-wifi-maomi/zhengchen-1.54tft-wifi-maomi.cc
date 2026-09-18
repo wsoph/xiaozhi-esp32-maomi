@@ -422,7 +422,8 @@ private:
         const auto now = maomi_clock_.GetSnapshot();
         const bool daytime = now.valid && now.local_time.hour >= 8 && now.local_time.hour < 22;
         const char* hint = "";
-        if (visible && view.active) {
+        const bool studying = view.active && !view.home.sleeping;
+        if (visible && studying) {
             hint = maomi::LearningVoiceHint(
                 state, Application::GetInstance().GetAudioService().IsAudioProcessorRunning());
         }
@@ -438,7 +439,12 @@ private:
             else if (view.mood == "dirty")
                 hint = "该铲屎啦";
         }
-        display_->SetLearningPresentation(visible && view.active, view.word, hint);
+        const bool home_visible =
+            view.ready && maomi::PetHomeVisible(state, pet.priority, timer_visible, studying,
+                                                maomi_high_temperature_);
+        display_->SetLearningPresentation(visible && studying, view.word,
+                                          home_visible && view.adopted ? "" : hint);
+        display_->SetPetHome(home_visible, view.home, MonotonicMs());
         // Keep the word visible during oral questions, but defer care animations
         // until the normal conversation animation has yielded the pet layer.
         if (!visible || pet.priority <= maomi::PetPriority::kPower ||
@@ -446,12 +452,14 @@ private:
             return;
         maomi_learning_revision_ = view.revision;
         if (visible && (view.event == "pet" || view.event == "feed" || view.event == "snack" ||
-                        view.event == "clean" || view.event == "adopt" ||
+                        view.event == "clean" || view.event == "adopt" || view.event == "water" ||
+                        view.event == "doctor" || view.event == "ball" || view.event == "wand" ||
                         view.care_days > maomi_learning_care_days_)) {
-            const auto expression = view.event == "pet" ? maomi::PetState::kBeingPetted
-                                    : view.event == "feed" || view.event == "snack"
-                                        ? maomi::PetState::kEating
-                                        : maomi::PetState::kHappy;
+            const auto expression =
+                view.event == "ball" || view.event == "wand"    ? maomi::PetState::kPlaying
+                : view.event == "pet"                           ? maomi::PetState::kBeingPetted
+                : view.event == "feed" || view.event == "snack" ? maomi::PetState::kEating
+                                                                : maomi::PetState::kHappy;
             maomi_pet_core_.Submit(maomi::Event::Interaction(expression));
             maomi_active_interaction_ = maomi::PetAction::kFeed;
             maomi_interaction_remaining_ms_ = kMaomiInteractionVisibleDurationMs;

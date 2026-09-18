@@ -128,7 +128,7 @@ LearningTime LearningService::Now() {
     if (!localtime_r(&epoch, &local))
         return {};
     return {epoch, (local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday,
-            local.tm_mon + 1, local.tm_mday};
+            local.tm_mon + 1, local.tm_mday, local.tm_hour};
 }
 
 bool LearningService::Start() {
@@ -191,8 +191,10 @@ std::string LearningService::Status() const {
     cJSON_AddNumberToObject(json.get(), "answer_attempts_since_boot", answer_attempts);
     cJSON_AddStringToObject(json.get(), "last_answer_error", last_answer_error.c_str());
     if (cJSON_HasObjectItem(json.get(), "paused"))
-        cJSON_ReplaceItemInObjectCaseSensitive(json.get(), "paused",
-                                               cJSON_CreateBool(suspended_.load()));
+        cJSON_ReplaceItemInObjectCaseSensitive(
+            json.get(), "paused",
+            cJSON_CreateBool(suspended_.load() ||
+                             cJSON_IsTrue(cJSON_GetObjectItem(json.get(), "sleeping"))));
     return Dump(json.get());
 }
 LearningView LearningService::View() const {
@@ -213,6 +215,19 @@ void LearningService::Publish(const std::string& event) {
     view.mood = engine_.Mood(now);
     view.birthday = engine_.IsBirthday(now);
     view.event = event;
+    auto& home = view.home;
+    home.adopted = view.adopted;
+    home.sleeping = engine_.IsSleeping(now);
+    published_sleeping_ = home.sleeping;
+    home.birthday = view.birthday;
+    home.age_days = engine_.AgeDays(now);
+    home.care_days = s.care_days;
+    home.coins = s.coins;
+    home.satiety = s.satiety;
+    home.poop = s.poop;
+    home.life = engine_.GetLife(now);
+    home.name = s.name;
+    home.mood = view.mood;
     Json j(cJSON_CreateObject(), cJSON_Delete);
     cJSON_AddBoolToObject(j.get(), "ok", true);
     cJSON_AddBoolToObject(j.get(), "time_valid", now.Valid());
@@ -228,6 +243,21 @@ void LearningService::Publish(const std::string& event) {
                             : s.care_days >= 7 ? "young"
                                                : "kitten");
     cJSON_AddStringToObject(j.get(), "mood", view.mood.c_str());
+    cJSON_AddBoolToObject(j.get(), "sleeping", home.sleeping);
+    cJSON_AddNumberToObject(j.get(), "health", home.life.health);
+    cJSON_AddNumberToObject(j.get(), "energy", home.life.energy);
+    cJSON_AddNumberToObject(j.get(), "hydration", home.life.hydration);
+    cJSON_AddNumberToObject(j.get(), "happiness", home.life.happiness);
+    cJSON_AddStringToObject(j.get(), "personality", PetPersonality(home.life));
+    cJSON_AddStringToObject(j.get(), "care_hint", PetHomeHint(home));
+    cJSON_AddNumberToObject(j.get(), "outfit", home.life.outfit);
+    cJSON_AddNumberToObject(j.get(), "room", home.life.room);
+    cJSON_AddBoolToObject(j.get(), "supplies_available",
+                          now.Valid() && home.life.supply_date < now.date);
+    auto* owned = cJSON_AddArrayToObject(j.get(), "owned_items");
+    for (const auto& item : kPetItems)
+        if (item.mask && (home.life.owned & item.mask))
+            cJSON_AddItemToArray(owned, cJSON_CreateString(item.id));
     cJSON_AddNumberToObject(j.get(), "satiety", s.satiety);
     cJSON_AddNumberToObject(j.get(), "poop", s.poop);
     cJSON_AddNumberToObject(j.get(), "coins", s.coins);
@@ -364,6 +394,8 @@ std::string LearningService::Execute(const Command& command) {
             result = engine_.Care(Text(a, "action"), now, revision);
         else if (op == "buy")
             result = engine_.Buy(Text(a, "item"), Number(a, "quantity", 99), now, revision);
+        else if (op == "use")
+            result = engine_.Use(Text(a, "item"), now, revision);
         else if (op == "start") {
             const auto mode = Text(a, "mode");
             if (mode != "zh_en" && mode != "en_zh")
@@ -380,7 +412,10 @@ std::string LearningService::Execute(const Command& command) {
         else
             return Failure("unknown_operation");
     }
-    Publish(result.ok ? (op == "care" ? Text(a, "action") : op) : "");
+    Publish(result.ok ? (op == "care"  ? Text(a, "action")
+                         : op == "use" ? Text(a, "item")
+                                       : op)
+                      : "");
     auto response = Parse(Status());
     cJSON_ReplaceItemInObjectCaseSensitive(response.get(), "ok", cJSON_CreateBool(result.ok));
     cJSON_AddStringToObject(response.get(), "status", result.ok ? "completed" : "failed");
@@ -431,7 +466,8 @@ void LearningService::Worker() {
                 // Clock sync must become visible before adoption, when Observe
                 // intentionally has no pet state to persist or revise.
                 if (revision != engine_.GetState().revision ||
-                    Now().Valid() != published_time_valid_)
+                    Now().Valid() != published_time_valid_ ||
+                    engine_.IsSleeping(Now()) != published_sleeping_)
                     Publish();
                 if (upload_id_ && esp_timer_get_time() > upload_expires_) {
                     upload_id_ = 0;
@@ -546,7 +582,9 @@ void LearningService::SerialWorker() {
 void LearningService::RegisterTools(McpServer& server) {
     server.AddTool(
         "self.pet.life",
-        "查询领养、生日、日龄、成长、猫爪币、背包和当前单词；操作前读取 revision。"
+        "查询领养、生日、日龄、成长、睡眠、健康、精力、饮水、心情、性格、装备、猫爪币、背包和当前单"
+        "词；操作前读取 revision。"
+        "health低于60为生病，可免费doctor就医；care_hint为当前建议，不编造需求。"
         "学习进度：unlearned_count 未学、consolidating_count 待巩固、mastered_count 已掌握，"
         "due_count 为待巩固中已到复习时间的词数。",
         {}, [this](const PropertyList&) -> ReturnValue { return Status(); });
@@ -555,9 +593,21 @@ void LearningService::RegisterTools(McpServer& server) {
         "查询 pending 操作结果。只有 completed 才能声称成功；pending 稍后查询，不能重新操作。",
         PropertyList({Property("id", kPropertyTypeInteger, 1, 0x7fffffff)}),
         [this](const PropertyList& p) -> ReturnValue { return Result(p["id"].value<int>()); });
-    server.AddTool("self.pet.shop", "查询猫咪商店价格；购买进入背包，使用才消耗。", {},
+    server.AddTool("self.pet.shop",
+                   "查询用品目录、价格、解锁照料天数；耐用品购买一次，使用不扣币。", {},
                    [](const PropertyList&) -> ReturnValue {
-                       return std::string("{\"food\":4,\"litter\":2,\"snack\":12}");
+                       Json root(cJSON_CreateObject(), cJSON_Delete);
+                       auto* items = cJSON_AddArrayToObject(root.get(), "items");
+                       for (const auto& product : kPetItems) {
+                           auto* item = cJSON_CreateObject();
+                           cJSON_AddStringToObject(item, "id", product.id);
+                           cJSON_AddStringToObject(item, "name", product.name);
+                           cJSON_AddNumberToObject(item, "price", product.price);
+                           cJSON_AddNumberToObject(item, "care_days_required", product.care_days);
+                           cJSON_AddBoolToObject(item, "durable", product.mask != 0);
+                           cJSON_AddItemToArray(items, item);
+                       }
+                       return Dump(root.get());
                    });
     const std::string contract =
         "返回 pending 后必须用 self.pet.operation 查询；需要 revision 的操作使用最近成功结果中的 "
@@ -593,11 +643,21 @@ void LearningService::RegisterTools(McpServer& server) {
                      {Property("name", kPropertyTypeString)});
     register_command(
         "self.pet.buy", "buy",
-        "购买用品：item 为 food/litter/snack。数量须经主人表达，不能自动购买。",
+        "购买用品：先查self.pet.shop；item为目录id。数量须经主人表达，不能自动购买。"
+        "玩具/服饰/房间仅买1件，growth_locked表示照料日未到，already_owned表示已经拥有。",
         {Property("item", kPropertyTypeString), Property("quantity", kPropertyTypeInteger, 1, 99)});
     register_command("self.pet.care", "care",
-                     "喂食或铲屎必须调用；action 为 feed/clean/snack/pet。失败不播放成功动画。",
+                     "照料必须调用；action=feed喂猫粮、clean铲屎、snack零食、pet摸摸、water喝水、"
+                     "doctor免费就医、sleep睡八小时、wake起床、supplies每日补足猫粮2份猫砂1份。"
+                     "不因没学习威胁猫咪死亡或离家。睡觉保留当前学习，开始背词可唤醒继续。"
+                     "睡觉不关闭设备、倒计时或提醒。失败不声称成功。",
                      {Property("action", kPropertyTypeString)});
+    register_command("self.pet.use", "use",
+                     "使用已有耐用品：ball小球、wand逗猫棒；scarf围巾、star_hat星星帽；"
+                     "cushion软垫、cat_bed小猫窝；no_outfit卸下服饰、default_room恢复默认房间。"
+                     "玩具是照料互动，不是学习小游戏，不给币；五分钟内重复玩返回play_cooldown。"
+                     "先查背包，只能使用已拥有物品；购买不自动装备。",
+                     {Property("item", kPropertyTypeString)});
     register_command(
         "self.learning.start", "start",
         "开始背单词赚猫粮，一局最多5词加错词纠正。mode=en_zh 听英文答中文，"

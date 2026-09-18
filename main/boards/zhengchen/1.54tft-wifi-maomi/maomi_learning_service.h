@@ -6,6 +6,7 @@
 
 #ifdef CONFIG_MAOMI_LEARNING
 #include "maomi_learning.h"
+#include "maomi_pet_presentation.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -20,6 +21,7 @@ class McpServer;
 
 namespace maomi {
 struct LearningView {
+    PetHomeView home;
     bool ready = false;
     bool adopted = false;
     bool active = false;
@@ -73,6 +75,7 @@ private:
     std::string status_ = "{\"ok\":false,\"error\":\"initializing\"}";
     LearningView view_;
     bool published_time_valid_ = false;
+    bool published_sleeping_ = false;
     std::atomic<bool> suspended_{false};
     std::vector<LearningWord> upload_;
     uint32_t upload_id_ = 0;

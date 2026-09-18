@@ -1,5 +1,7 @@
 #pragma once
 
+#include "maomi_pet_life.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -11,6 +13,7 @@ struct LearningTime {
     int32_t date = 0;
     int month = 0;
     int day = 0;
+    int hour = 12;
     bool Valid() const;
 };
 
@@ -37,6 +40,7 @@ struct LearningProgress {
 };
 
 struct LearningState {
+    PetLifeState life;
     uint32_t revision = 0;
     std::string name;
     int64_t born = 0;
@@ -97,9 +101,12 @@ public:
     uint32_t AgeDays(LearningTime now) const;
     bool IsBirthday(LearningTime now) const;
     std::string Mood(LearningTime now) const;
+    PetLifeState GetLife(LearningTime now) const;
+    bool IsSleeping(LearningTime now) const;
     LearningResult Adopt(const std::string& name, LearningTime now, uint32_t revision);
     LearningResult Care(const std::string& action, LearningTime now, uint32_t revision);
     LearningResult Buy(const std::string& item, int quantity, LearningTime now, uint32_t revision);
+    LearningResult Use(const std::string& item, LearningTime now, uint32_t revision);
     LearningResult Observe(LearningTime now);
     LearningResult Import(std::vector<LearningWord> book, LearningTime now, uint32_t revision);
     LearningResult Start(bool chinese_prompt, LearningTime now, uint32_t revision,
