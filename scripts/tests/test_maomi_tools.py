@@ -442,8 +442,6 @@ int main() {
         result.state = reject_interactions ? maomi::ToolOperationState::kRejected
                                            : maomi::ToolOperationState::kQueued;
         result.action = action;
-        result.points_added = action == maomi::PetAction::kPlay ? 3 : 2;
-        result.bond_points = 17 + result.points_added;
         result.sound_queued = true;
         return result;
     };
@@ -459,15 +457,10 @@ int main() {
         result.state = reject_interactions ? maomi::ToolOperationState::kRejected
                                            : maomi::ToolOperationState::kQueued;
         result.action = maomi::PetAction::kPlay;
-        result.points_added = 3;
-        result.bond_points = 23;
         return result;
     };
     dependencies.get_status = [&quiet]() {
         maomi::PetToolSnapshot snapshot;
-        snapshot.bond_points = 20;
-        snapshot.bond_level = maomi::BondLevel::kFamiliar;
-        snapshot.companion_days = 4;
         snapshot.mood = maomi::PetState::kHappy;
         snapshot.battery_level = 76;
         snapshot.charging = false;
@@ -647,7 +640,7 @@ int main() {
     assert(mini_adventure.find("\"round_limit\":4") != std::string::npos);
     assert(mini_adventure.find("第4次行动") != std::string::npos);
     assert(mini_adventure.find("\"presentation\":\"play\"") != std::string::npos);
-    assert(mini_adventure.find("\"points_added\":3") != std::string::npos);
+    assert(mini_adventure.find("points_added") == std::string::npos);
     assert(story_chain.find("\"game\":\"story_chain\"") != std::string::npos);
     assert(story_chain.find("\"round_limit\":6") != std::string::npos);
     assert(story_chain.find("第6次续写") != std::string::npos);
@@ -680,8 +673,8 @@ int main() {
 
     const auto status = server.Invoke(maomi::kPetStatusToolName);
     assert(status.find("\"name\":\"小猫咪\"") != std::string::npos);
-    assert(status.find("\"bond_points\":20") != std::string::npos);
-    assert(status.find("\"bond_level\":\"familiar\"") != std::string::npos);
+    assert(status.find("bond_points") == std::string::npos);
+    assert(status.find("bond_level") == std::string::npos);
     assert(status.find("\"mood\":\"happy\"") != std::string::npos);
 
     const auto enabled = server.Invoke(maomi::kPetQuietToolName, {{"enabled", true}});
@@ -1210,7 +1203,7 @@ class MaomiToolsContractTest(unittest.TestCase):
             interaction_lifetime,
         )
 
-    def test_bond_points_are_saved_as_an_important_write(self):
+    def test_feeding_uses_learning_inventory_and_no_relationship_score(self):
         board_source = (
             BOARD / "zhengchen-1.54tft-wifi-maomi.cc"
         ).read_text(encoding="utf-8")
@@ -1218,7 +1211,8 @@ class MaomiToolsContractTest(unittest.TestCase):
         interaction_handler = board_source.split(
             "maomi::InteractionToolResult HandleMaomiInteraction", 1
         )[1].split("maomi::PetToolSnapshot GetMaomiToolSnapshot", 1)[0]
-        self.assertIn("WriteImportance::kImportant", interaction_handler)
+        self.assertIn('maomi_learning_.Submit("care", args)', interaction_handler)
+        self.assertNotIn("bond_update", interaction_handler)
 
 
 if __name__ == "__main__":

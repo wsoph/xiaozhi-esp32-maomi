@@ -13,6 +13,19 @@
                 "CONFIG_SR_MN_CN_MULTINET7_QUANT=y",
                 "CONFIG_LV_FONT_MONTSERRAT_48=y"
             ]
+        },
+        {
+            "name": "zhengchen-1.54tft-wifi-maomi-learning",
+            "sdkconfig_append": [
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+                "CONFIG_CUSTOM_WAKE_WORD=\"mao mi guo lai\"",
+                "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"猫咪过来\"",
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20",
+                "CONFIG_SR_MN_CN_MULTINET7_QUANT=y",
+                "CONFIG_LV_FONT_MONTSERRAT_48=y",
+                "CONFIG_MAOMI_LEARNING=y",
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m-maomi-learning.csv\""
+            ]
         }
     ]
 }

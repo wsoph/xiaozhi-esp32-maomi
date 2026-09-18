@@ -132,20 +132,6 @@ const char* OperationText(ToolOperationState state) {
     return nullptr;
 }
 
-const char* BondLevelTextForTool(BondLevel level) {
-    switch (level) {
-        case BondLevel::kAcquainted:
-            return "acquainted";
-        case BondLevel::kFamiliar:
-            return "familiar";
-        case BondLevel::kClose:
-            return "close";
-        case BondLevel::kInSync:
-            return "in_sync";
-    }
-    return nullptr;
-}
-
 const char* MoodText(PetState mood) {
     switch (mood) {
         case PetState::kIdle:
@@ -182,8 +168,7 @@ const char* BoolText(bool value) { return value ? "true" : "false"; }
 
 void ValidateInteractionResult(const InteractionToolResult& result, PetAction requested_action) {
     if (result.action != requested_action || ActionText(result.action) == nullptr ||
-        OperationText(result.state) == nullptr || result.points_added > 3 ||
-        result.bond_points < 0 || result.bond_points > kMaximumBondPoints) {
+        OperationText(result.state) == nullptr) {
         throw std::runtime_error("Pet interaction returned an invalid device snapshot");
     }
     if (result.state == ToolOperationState::kRejected) {
@@ -195,9 +180,7 @@ void ValidateInteractionResult(const InteractionToolResult& result, PetAction re
 }
 
 void ValidateSnapshot(const PetToolSnapshot& snapshot) {
-    if (snapshot.bond_points < 0 || snapshot.bond_points > kMaximumBondPoints ||
-        BondLevelTextForTool(snapshot.bond_level) == nullptr ||
-        MoodText(snapshot.mood) == nullptr || snapshot.battery_level < -1 ||
+    if (MoodText(snapshot.mood) == nullptr || snapshot.battery_level < -1 ||
         snapshot.battery_level > 100) {
         throw std::runtime_error("Pet status returned an invalid device snapshot");
     }
@@ -208,10 +191,10 @@ std::string InteractionJson(const InteractionToolResult& result) {
     json += OperationText(result.state);
     json += "\",\"action\":\"";
     json += ActionText(result.action);
-    json += "\",\"points_added\":" + std::to_string(result.points_added);
-    json += ",\"bond_points\":" + std::to_string(result.bond_points);
-    json += ",\"sound_queued\":";
+    json += "\",\"sound_queued\":";
     json += BoolText(result.sound_queued);
+    if (!result.operation_json.empty())
+        json += ",\"operation\":" + result.operation_json;
     json += ",\"persistence_pending\":";
     json += BoolText(result.persistence_pending);
     json += "}";
@@ -233,8 +216,6 @@ std::string VoiceGameStartJson(const InteractionToolResult& result, VoiceGame ga
     json += game_text;
     json += "\",\"presentation\":\"play\",\"round_limit\":";
     json += std::to_string(round_limit);
-    json += ",\"points_added\":" + std::to_string(result.points_added);
-    json += ",\"bond_points\":" + std::to_string(result.bond_points);
     json += ",\"persistence_pending\":";
     json += BoolText(result.persistence_pending);
     json += ",\"instruction\":\"";
@@ -245,11 +226,11 @@ std::string VoiceGameStartJson(const InteractionToolResult& result, VoiceGame ga
 
 std::string StatusJson(const PetToolSnapshot& snapshot) {
     ValidateSnapshot(snapshot);
-    std::string json = "{\"ok\":true,\"name\":\"小猫咪\",\"bond_points\":";
-    json += std::to_string(snapshot.bond_points);
-    json += ",\"bond_level\":\"";
-    json += BondLevelTextForTool(snapshot.bond_level);
-    json += "\",\"companion_days\":" + std::to_string(snapshot.companion_days);
+    std::string json = "{\"ok\":true";
+    if (snapshot.life_json.empty())
+        json += ",\"name\":\"小猫咪\"";
+    if (!snapshot.life_json.empty())
+        json += ",\"life\":" + snapshot.life_json;
     json += ",\"mood\":\"";
     json += MoodText(snapshot.mood);
     json += "\",\"battery_level\":";
@@ -657,7 +638,8 @@ void RegisterPetTools(McpServer& server, PetToolDependencies dependencies) {
     server.AddTool(
         kPetInteractToolName,
         "当主人明确要摸小猫咪或喂零食时必须调用。action 只能是 pet 或 feed；"
-        "只有工具成功返回后才能说互动已经执行，queued 表示设备已排队而不是已经展示完成。",
+        "queued仅表示入队；含operation时必须用self.pet.operation查询operation_"
+        "id，completed才确认喂食成功。",
         PropertyList({Property("action", kPropertyTypeString)}),
         [interact = std::move(interact)](const PropertyList& properties) -> ReturnValue {
             if (!interact) {
@@ -690,7 +672,7 @@ void RegisterPetTools(McpServer& server, PetToolDependencies dependencies) {
     auto get_status = std::move(dependencies.get_status);
     server.AddTool(
         kPetStatusToolName,
-        "当主人询问小猫咪的名字、心情、亲密度、陪伴天数、电池、充电、安静模式或提醒数量时"
+        "当主人询问小猫咪的名字、心情、生日、日龄、猫爪币、电池、充电、安静模式或提醒数量时"
         "调用；必须依据返回的实时状态回答。",
         PropertyList(), [get_status = std::move(get_status)](const PropertyList&) -> ReturnValue {
             if (!get_status) {

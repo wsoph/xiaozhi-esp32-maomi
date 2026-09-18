@@ -1,12 +1,13 @@
 #pragma once
 
-#include "maomi_bond.h"
 #include "maomi_pet_core.h"
 #include "maomi_reminders.h"
+#include "maomi_storage.h"
 #include "maomi_timing.h"
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <string_view>
 
 class McpServer;
@@ -51,8 +52,7 @@ enum class ToolOperationState : uint8_t {
 struct InteractionToolResult {
     ToolOperationState state = ToolOperationState::kUnavailable;
     PetAction action = PetAction::kPet;
-    uint8_t points_added = 0;
-    int32_t bond_points = 0;
+    std::string operation_json;
     bool sound_queued = false;
     bool persistence_pending = false;
 };
@@ -64,9 +64,7 @@ struct QuietToolResult {
 };
 
 struct PetToolSnapshot {
-    int32_t bond_points = 0;
-    BondLevel bond_level = BondLevel::kAcquainted;
-    uint32_t companion_days = 0;
+    std::string life_json;
     PetState mood = PetState::kIdle;
     int battery_level = -1;
     bool charging = false;

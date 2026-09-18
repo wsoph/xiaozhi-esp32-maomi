@@ -744,6 +744,9 @@ elseif(CONFIG_BOARD_TYPE_ZHENGCHEN_1_54TFT_WIFI_MAOMI)
     set(MAOMI_ASSETS_EXTRA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/assets-extra")
     set(MAOMI_ASSETS_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/assets-manifest.json")
     set(MAOMI_ASSETS_VALIDATOR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/validate_assets.py")
+    if(CONFIG_MAOMI_LEARNING)
+        set(MAOMI_ASSETS_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/assets-learning-manifest.json")
+    endif()
     set(DEFAULT_ASSETS_EXTRA_FILES "${MAOMI_ASSETS_EXTRA_DIR}")
     set(MAOMI_INDEX_EXTRA_IMAGES ON)
 elseif(CONFIG_BOARD_TYPE_MINSI_K08_DUAL)
@@ -1048,6 +1051,10 @@ if(CONFIG_IDF_TARGET_ESP32S3)
 endif()
 
 set(MAIN_PRIV_REQUIRES_EXTRA "")
+# Dependency expansion runs before sdkconfig is available. Maomi learning is S3-only.
+if(IDF_TARGET STREQUAL "esp32s3")
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA esp_driver_usb_serial_jtag)
+endif()
 if(BOARD_TYPE STREQUAL "m5stack-stick-s3")
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA
         m5stack__m5pm1

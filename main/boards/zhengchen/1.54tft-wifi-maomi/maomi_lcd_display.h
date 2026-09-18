@@ -17,6 +17,15 @@ private:
     lv_obj_t* countdown_label_ = nullptr;
     lv_obj_t* countdown_pause_left_ = nullptr;
     lv_obj_t* countdown_pause_right_ = nullptr;
+#ifdef CONFIG_MAOMI_LEARNING
+    lv_obj_t* learning_popup_ = nullptr;
+    lv_obj_t* learning_word_ = nullptr;
+    lv_obj_t* learning_hint_ = nullptr;
+    bool learning_presentation_set_ = false;
+    bool learning_visible_ = false;
+    std::string learning_last_word_;
+    std::string learning_last_hint_;
+#endif
 
     lv_obj_t* CreateCountdownShape(int32_t x, int32_t y, int32_t width, int32_t height,
                                    uint32_t color, int32_t radius) {
@@ -105,7 +114,74 @@ public:
             lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
         }
         SetupCountdownPopup();
+#ifdef CONFIG_MAOMI_LEARNING
+        learning_popup_ = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(learning_popup_, 240, 240);
+        lv_obj_center(learning_popup_);
+        lv_obj_set_style_bg_color(learning_popup_, lv_color_hex(kCountdownPaleFurColor), 0);
+        lv_obj_set_style_bg_opa(learning_popup_, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(learning_popup_, 0, 0);
+        lv_obj_set_style_border_width(learning_popup_, 0, 0);
+        lv_obj_set_style_radius(learning_popup_, 0, 0);
+        lv_obj_remove_flag(learning_popup_, LV_OBJ_FLAG_SCROLLABLE);
+        learning_word_ = lv_label_create(learning_popup_);
+        lv_obj_set_width(learning_word_, 208);
+        lv_label_set_long_mode(learning_word_, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(learning_word_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(learning_word_, &lv_font_montserrat_48, 0);
+        lv_obj_set_style_text_color(learning_word_, lv_color_hex(kCountdownInkColor), 0);
+        lv_obj_align(learning_word_, LV_ALIGN_CENTER, 0, -18);
+        lv_obj_add_flag(learning_popup_, LV_OBJ_FLAG_HIDDEN);
+        learning_hint_ = lv_label_create(lv_screen_active());
+        lv_obj_set_width(learning_hint_, 224);
+        // Inherit the screen font: asset loading replaces and frees the previous theme font.
+        lv_obj_set_style_text_align(learning_hint_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_bg_color(learning_hint_, lv_color_hex(kCountdownPaleFurColor), 0);
+        lv_obj_set_style_bg_opa(learning_hint_, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(learning_hint_, lv_color_hex(kCountdownInkColor), 0);
+        lv_obj_align(learning_hint_, LV_ALIGN_BOTTOM_MID, 0, -6);
+        lv_obj_add_flag(learning_hint_, LV_OBJ_FLAG_HIDDEN);
+#endif
     }
+
+#ifdef CONFIG_MAOMI_LEARNING
+    void SetLearningPresentation(bool visible, const std::string& word, const char* hint) {
+        DisplayLockGuard lock(this);
+        if (learning_popup_ == nullptr)
+            return;
+        const char* next_hint = hint == nullptr ? "" : hint;
+        if (learning_presentation_set_ && learning_visible_ == visible &&
+            learning_last_word_ == word && learning_last_hint_ == next_hint)
+            return;
+        learning_presentation_set_ = true;
+        learning_visible_ = visible;
+        learning_last_word_ = word;
+        learning_last_hint_ = next_hint;
+        if (visible) {
+            lv_point_t size;
+            lv_text_get_size(&size, word.c_str(), &lv_font_montserrat_48, 0, 0, LV_COORD_MAX,
+                             LV_TEXT_FLAG_NONE);
+            // Keep long words visible: shrink to the normal text font and wrap if necessary.
+            if (!word.empty() && size.x <= 208) {
+                lv_obj_set_style_text_font(learning_word_, &lv_font_montserrat_48, 0);
+            } else {
+                // Follow theme replacements without retaining a raw pointer to an old font.
+                lv_obj_remove_local_style_prop(learning_word_, LV_STYLE_TEXT_FONT, 0);
+            }
+            lv_label_set_text(learning_word_, word.empty() ? "听题作答" : word.c_str());
+            lv_obj_align(learning_word_, LV_ALIGN_CENTER, 0, -18);
+            lv_obj_remove_flag(learning_popup_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(learning_popup_);
+        } else
+            lv_obj_add_flag(learning_popup_, LV_OBJ_FLAG_HIDDEN);
+        if (hint != nullptr && hint[0] != '\0') {
+            lv_label_set_text(learning_hint_, hint);
+            lv_obj_remove_flag(learning_hint_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(learning_hint_);
+        } else
+            lv_obj_add_flag(learning_hint_, LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
 
     void SetTimerSeconds(int32_t seconds, bool paused) {
         DisplayLockGuard lock(this);

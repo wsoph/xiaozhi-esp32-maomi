@@ -1127,3 +1127,10 @@ menu "TAIJIPAI_S3_CONFIG"
 endmenu
 
 endmenu
+
+config MAOMI_LEARNING
+    bool "Maomi vocabulary and pet care"
+    depends on BOARD_TYPE_ZHENGCHEN_1_54TFT_WIFI_MAOMI
+    default n
+    help
+        Requires the dedicated learning partition table and USB migration.

@@ -7,9 +7,10 @@
 #include "config.h"
 #include "led/single_led.h"
 #include "maomi_autonomy.h"
-#include "maomi_bond.h"
 #include "maomi_clock.h"
 #include "maomi_lcd_display.h"
+#include "maomi_learning_presentation.h"
+#include "maomi_learning_service.h"
 #include "maomi_pet_core.h"
 #include "maomi_reminders.h"
 #include "maomi_storage.h"
@@ -83,7 +84,11 @@ private:
     maomi::NvsStorageBackend maomi_storage_backend_;
     maomi::StateStorage maomi_storage_;
     maomi::ReliableClock maomi_clock_;
-    std::unique_ptr<maomi::BondTracker> maomi_bond_;
+#ifdef CONFIG_MAOMI_LEARNING
+    maomi::LearningService maomi_learning_;
+    uint32_t maomi_learning_revision_ = 0;
+    uint32_t maomi_learning_care_days_ = 0;
+#endif
     std::unique_ptr<maomi::ReminderEngine> maomi_reminders_;
     maomi::Stopwatch maomi_stopwatch_;
     maomi::AutonomyController maomi_autonomy_{kMaomiAutonomyRandomSeed};
@@ -321,6 +326,9 @@ private:
                 maomi_wake_.Poll(MonotonicMs(), app.GetDeviceState(),
                                  app.GetAudioService().IsPlaybackIdle());
                 maomi_wake_poll_gate_.Release();
+#ifdef CONFIG_MAOMI_LEARNING
+                UpdateLearningPresentation();
+#endif
             });
             app.GetAudioService().SetDiscardVoiceUploadOnWake(true);
             return true;
@@ -395,6 +403,64 @@ private:
                result == maomi::SaveResult::kInvalidState;
     }
 
+#ifdef CONFIG_MAOMI_LEARNING
+    void UpdateLearningPresentation() {
+        const auto view = maomi_learning_.View();
+        const auto pet = maomi_pet_core_.GetSnapshot();
+        const auto state = Application::GetInstance().GetDeviceState();
+        const bool available = state == kDeviceStateIdle || state == kDeviceStateListening ||
+                               state == kDeviceStateSpeaking;
+        const bool interrupted = !available || maomi_high_temperature_ ||
+                                 pet.priority == maomi::PetPriority::kCritical ||
+                                 pet.priority == maomi::PetPriority::kReminder ||
+                                 pet.priority == maomi::PetPriority::kPower;
+        // A foreground timer owns the screen even when the assistant is idle.
+        const bool timer_visible = HasMaomiForegroundTimer(MonotonicMs());
+        maomi_learning_.SetSuspended(interrupted || timer_visible);
+        const bool visible = !interrupted && !timer_visible;
+        const bool quiet = maomi_storage_.GetState().manual_quiet;
+        const auto now = maomi_clock_.GetSnapshot();
+        const bool daytime = now.valid && now.local_time.hour >= 8 && now.local_time.hour < 22;
+        const char* hint = "";
+        if (visible && view.active) {
+            hint = maomi::LearningVoiceHint(
+                state, Application::GetInstance().GetAudioService().IsAudioProcessorRunning());
+        }
+        if (visible && !view.active && !quiet && daytime) {
+            if (!view.ready)
+                hint = "学习存档不可用";
+            else if (!view.adopted)
+                hint = "说：领养猫咪";
+            else if (view.birthday)
+                hint = "生日快乐！";
+            else if (view.mood == "hungry")
+                hint = "该喂猫粮啦";
+            else if (view.mood == "dirty")
+                hint = "该铲屎啦";
+        }
+        display_->SetLearningPresentation(visible && view.active, view.word, hint);
+        // Keep the word visible during oral questions, but defer care animations
+        // until the normal conversation animation has yielded the pet layer.
+        if (!visible || pet.priority <= maomi::PetPriority::kPower ||
+            view.revision == maomi_learning_revision_)
+            return;
+        maomi_learning_revision_ = view.revision;
+        if (visible && (view.event == "pet" || view.event == "feed" || view.event == "snack" ||
+                        view.event == "clean" || view.event == "adopt" ||
+                        view.care_days > maomi_learning_care_days_)) {
+            const auto expression = view.event == "pet" ? maomi::PetState::kBeingPetted
+                                    : view.event == "feed" || view.event == "snack"
+                                        ? maomi::PetState::kEating
+                                        : maomi::PetState::kHappy;
+            maomi_pet_core_.Submit(maomi::Event::Interaction(expression));
+            maomi_active_interaction_ = maomi::PetAction::kFeed;
+            maomi_interaction_remaining_ms_ = kMaomiInteractionVisibleDurationMs;
+            maomi_interaction_last_update_ms_ = MonotonicMs();
+        }
+        maomi_learning_care_days_ = view.care_days;
+    }
+#endif
+
     void ObserveMaomiClockOnMainTask(uint64_t monotonic_ms) {
         const uint64_t current_second = monotonic_ms / 1000;
         if (current_second == maomi_last_clock_observe_second_) {
@@ -425,10 +491,6 @@ private:
             maomi_pet_core_.Submit(maomi::Event::TimeValidityChanged(time_valid));
         }
 
-        if (maomi_bond_ && maomi_bond_->ObserveTime(maomi_clock_)) {
-            const auto merged = maomi_bond_->MergePersistentState(maomi_storage_.GetState());
-            maomi_storage_.Update(merged, maomi::WriteImportance::kNormal, monotonic_ms);
-        }
         maomi_storage_.FlushIfDue(monotonic_ms);
     }
 
@@ -448,18 +510,6 @@ private:
                 return maomi::PetState::kPlaying;
         }
         return maomi::PetState::kIdle;
-    }
-
-    static maomi::BondAction BondActionForPetAction(maomi::PetAction action) {
-        switch (action) {
-            case maomi::PetAction::kPet:
-                return maomi::BondAction::kPet;
-            case maomi::PetAction::kFeed:
-                return maomi::BondAction::kFeed;
-            case maomi::PetAction::kPlay:
-                return maomi::BondAction::kPlay;
-        }
-        return maomi::BondAction::kCount;
     }
 
     static maomi::PetState PetStateForAutonomyAction(maomi::AutonomyAction action) {
@@ -860,6 +910,10 @@ private:
         }
         const uint64_t monotonic_ms = MonotonicMs();
         ObserveMaomiClockOnMainTask(monotonic_ms);
+#ifdef CONFIG_MAOMI_LEARNING
+        // Poll capture readiness at the board's 100 ms cadence, independent of clock updates.
+        UpdateLearningPresentation();
+#endif
         const auto pet_snapshot = maomi_pet_core_.GetSnapshot();
         UpdateMaomiInteractionLifetime(monotonic_ms, pet_snapshot);
         UpdateMaomiReminderLifetime(monotonic_ms, pet_snapshot);
@@ -872,6 +926,9 @@ private:
         const maomi::AutonomyInputs inputs = {
             .official_idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle,
             .higher_priority_active = HasMaomiForegroundTimer(monotonic_ms) ||
+#ifdef CONFIG_MAOMI_LEARNING
+                                      maomi_learning_.View().active ||
+#endif
                                       (pet_snapshot.priority >= maomi::PetPriority::kReminder &&
                                        pet_snapshot.priority < maomi::PetPriority::kAutonomous),
             .activity = activity,
@@ -924,30 +981,32 @@ private:
     maomi::InteractionToolResult HandleMaomiInteraction(maomi::PetAction action) {
         maomi::InteractionToolResult result;
         result.action = action;
-        if (!maomi_bond_) {
+#ifdef CONFIG_MAOMI_LEARNING
+        const auto view = maomi_learning_.View();
+        if (action == maomi::PetAction::kFeed) {
+            const auto args =
+                "{\"action\":\"feed\",\"revision\":" + std::to_string(view.revision) + "}";
+            result.operation_json = maomi_learning_.Submit("care", args);
+            result.state = maomi::ToolOperationState::kQueued;
+            result.persistence_pending = true;
             return result;
         }
+        if (view.adopted) {
+            const auto args = "{\"action\":\"" +
+                              std::string(action == maomi::PetAction::kPet ? "pet" : "play") +
+                              "\",\"revision\":" + std::to_string(view.revision) + "}";
+            maomi_learning_.Submit("care", args);
+        }
+#endif
 
         const auto submit =
             maomi_pet_core_.Submit(maomi::Event::Interaction(PetStateForAction(action)));
         if (submit == maomi::SubmitResult::kRejected) {
             result.state = maomi::ToolOperationState::kRejected;
-            result.bond_points = maomi_bond_->GetSnapshot(maomi_clock_).total_points;
             return result;
         }
 
-        const auto bond_update = maomi_bond_->Record(BondActionForPetAction(action), maomi_clock_);
-        maomi::SaveResult save_result = maomi::SaveResult::kNoChanges;
-        if (bond_update.persistent_state_changed) {
-            const auto merged = maomi_bond_->MergePersistentState(maomi_storage_.GetState());
-            save_result =
-                maomi_storage_.Update(merged, maomi::WriteImportance::kImportant, MonotonicMs());
-        }
         result.state = maomi::ToolOperationState::kQueued;
-        result.points_added = bond_update.points_added;
-        result.bond_points = maomi_bond_->GetSnapshot(maomi_clock_).total_points;
-        result.persistence_pending =
-            bond_update.persistent_state_changed && SaveIsPending(save_result);
 
         maomi_active_interaction_ = action;
         maomi_interaction_remaining_ms_ = kMaomiInteractionVisibleDurationMs;
@@ -968,15 +1027,11 @@ private:
     }
 
     maomi::PetToolSnapshot GetMaomiToolSnapshot() const {
-        if (!maomi_bond_) {
-            return {};
-        }
         const auto pet = maomi_pet_core_.GetSnapshot();
-        const auto bond = maomi_bond_->GetSnapshot(maomi_clock_);
         return {
-            .bond_points = bond.total_points,
-            .bond_level = bond.level,
-            .companion_days = bond.companion_days,
+#ifdef CONFIG_MAOMI_LEARNING
+            .life_json = maomi_learning_.Status(),
+#endif
             .mood = pet.state,
             .battery_level = pet.battery_level,
             .charging = pet.charging,
@@ -1007,13 +1062,11 @@ private:
     }
 
     bool InitializeMaomiState() {
-        const auto load = maomi_storage_.Load(MonotonicMs());
-        try {
-            maomi_bond_ = std::make_unique<maomi::BondTracker>(load.state);
-        } catch (const std::bad_alloc&) {
-            ESP_LOGE(TAG, "Failed to allocate Maomi relationship state");
-            return false;
-        }
+        maomi_storage_.Load(MonotonicMs());
+#ifdef CONFIG_MAOMI_LEARNING
+        if (!maomi_learning_.Start())
+            ESP_LOGE(TAG, "Learning worker unavailable");
+#endif
         ObserveMaomiClockOnMainTask(MonotonicMs());
         return true;
     }
@@ -1042,6 +1095,9 @@ private:
     bool InitializeMaomiTools() {
         try {
             auto& server = McpServer::GetInstance();
+#ifdef CONFIG_MAOMI_LEARNING
+            maomi_learning_.RegisterTools(server);
+#endif
             maomi::RegisterPetTools(
                 server,
                 {
