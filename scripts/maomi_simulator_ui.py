@@ -7,6 +7,16 @@ from tkinter.font import Font
 
 
 ERRORS = {
+    'already_healthy': '现在很健康，不需要治疗。',
+    'not_thirsty': '饮水已经充足。',
+    'already_stocked': '基础用品充足，今天的补给机会保留。',
+    'supplies_claimed': '今天已经领取过补给，明天再来。',
+    'pet_sleeping': '猫咪正在睡觉，可以叫它起床，或开始背词继续原题。',
+    'growth_locked': '还未达到这件用品所需的照料天数。',
+    'already_owned': '已经拥有，无需重复购买。',
+    'not_owned': '还没有这件用品，先在商店购买。',
+    'play_cooldown': '刚刚玩过，休息五分钟再玩吧。',
+    'too_tired': '精力不足，先睡一会儿。',
     'already_full': '已经吃饱啦，快进一些时间再喂食。',
     'already_clean': '猫砂盆很干净，还不需要铲屎。',
     'out_of_stock': '背包里没有这件用品，先去商店购买。',
@@ -83,9 +93,18 @@ class Playground:
             tabs.add(frame, text=title)
         ttk.Label(care, text='一份猫粮，一点陪伴', font=('Microsoft YaHei UI', 16, 'bold')).pack(anchor='w')
         ttk.Label(care, text='领养赠 6 份猫粮和 3 份猫砂。\n每天两次有效喂食、一次铲屎，记一个照料日。', wraplength=470).pack(anchor='w', pady=12)
-        for title, action in [('喂猫粮  ·  饱食 +25', 'feed'), ('铲屎  ·  消耗 1 份猫砂', 'clean'),
-                              ('给零食  ·  饱食 +5', 'snack'), ('摸摸小猫', 'pet'), ('陪它玩一会儿', 'play')]:
-            ttk.Button(care, text=title, command=lambda a=action: self.act('care', a)).pack(fill='x', pady=4)
+        care_actions = ttk.Frame(care)
+        care_actions.pack(fill='x')
+        for index, (title, action) in enumerate([
+                ('喂猫粮 · 饱食 +25', 'feed'), ('铲屎 · 消耗猫砂', 'clean'),
+                ('给零食 · 饱食 +5', 'snack'), ('摸摸小猫', 'pet'), ('喝水', 'water'),
+                ('免费就医', 'doctor'), ('睡八小时', 'sleep'), ('起床', 'wake'),
+                ('领取每日基础补给', 'supplies')]):
+            ttk.Button(care_actions, text=title, command=lambda a=action: self.act('care', a)).grid(
+                row=index // 2, column=index % 2, sticky='ew', padx=3, pady=4)
+        care_actions.columnconfigure((0, 1), weight=1)
+        self.life_details = tk.StringVar()
+        ttk.Label(care, textvariable=self.life_details, wraplength=470).pack(anchor='w', pady=10)
         ttk.Label(care, text='可以用下方的时间按钮体验饥饿和年龄变化。\n小猫不会因为没来照顾而死亡或离家。', wraplength=470).pack(anchor='w', pady=12)
         self.deck = tk.StringVar()
         ttk.Label(study, textvariable=self.deck).pack(anchor='w')
@@ -116,12 +135,20 @@ class Playground:
         ttk.Button(answers, text='结束学习', command=lambda: self.act('stop')).pack(side='left', padx=6)
         ttk.Label(study, text='每天完成 5 个不同词得 10 币；首次独立答对另加 2 币，\n提示后答对加 1 币；每日最多 40 币。', wraplength=470).pack(anchor='w', pady=14)
         ttk.Label(shop, text='把学习成果装进背包', font=('Microsoft YaHei UI', 16, 'bold')).pack(anchor='w', pady=(0, 14))
-        for title, item, price in [('猫粮', 'food', 4), ('猫砂', 'litter', 2), ('零食', 'snack', 12)]:
+        for product in self.sim.call('status')['shop']:
+            title, item, price = product['name'], product['id'], product['price']
             row = ttk.Frame(shop)
-            row.pack(fill='x', pady=10)
-            ttk.Label(row, text=f'{title}  ·  {price} 猫爪币 / 份', width=27).pack(side='left')
-            ttk.Button(row, text='买 1 份', command=lambda i=item: self.act('buy', i, 1)).pack(side='left')
-        ttk.Label(shop, text='购买后进入背包，再到「照顾猫咪」使用。\n每日两份猫粮加一份猫砂，共需 10 币。').pack(anchor='w', pady=20)
+            row.pack(fill='x', pady=3)
+            unlock = f" · 照料{product['care_days_required']}天" if product['care_days_required'] else ''
+            ttk.Label(row, text=f'{title} · {price}币{unlock}', width=26).pack(side='left')
+            ttk.Button(row, text='购买', command=lambda i=item: self.act('buy', i, 1)).pack(side='left')
+            if product['durable']:
+                ttk.Button(row, text='使用', command=lambda i=item: self.act('use', i)).pack(side='left', padx=3)
+        reset_row = ttk.Frame(shop)
+        reset_row.pack(fill='x', pady=8)
+        ttk.Button(reset_row, text='卸下服饰', command=lambda: self.act('use', 'no_outfit')).pack(side='left')
+        ttk.Button(reset_row, text='恢复默认房间', command=lambda: self.act('use', 'default_room')).pack(side='left', padx=4)
+        ttk.Label(shop, text='耐用品只买一次，使用不扣币。玩具不产生学习奖励。').pack(anchor='w', pady=8)
         self.clock = tk.StringVar()
         ttk.Label(shell, textvariable=self.clock).pack(anchor='w', pady=(16, 6))
         time_row = ttk.Frame(shell)
@@ -155,7 +182,7 @@ class Playground:
                                   'restart': '已从本次试玩的存档重新加载。',
                                   'stop': '本局已结束，已获得的猫爪币保留。',
                                   'start': '开始啦！先回答，再核对答案。'}.get(args[0], '已完成。'))
-            if args[0] == 'care':
+            if args[0] == 'care' and args[1] in ('feed', 'snack', 'pet', 'play', 'clean'):
                 file = {'feed': 'maomi_eat.gif', 'snack': 'maomi_eat.gif', 'pet': 'maomi_pet.gif',
                         'play': 'maomi_play.gif', 'clean': 'happy.png'}[args[1]]
                 self.animate(file)
@@ -180,7 +207,12 @@ class Playground:
         self.details.set(f"{state['growth']} · {state['age_days']} 日龄 · 照料 {state['care_days']} 天\n" +
                          (f'生日 {birthday[:4]}-{birthday[4:6]}-{birthday[6:]}' if adopted else '领养即出生'))
         self.satiety['value'] = state['satiety']
-        mood = {'hungry': '肚子饿了', 'dirty': '该铲屎啦', 'happy': '心情很好', 'content': '很自在'}[state['mood']]
+        mood = {'hungry': '肚子饿了', 'dirty': '该铲屎啦', 'happy': '心情很好', 'content': '很自在',
+                'sleeping': '睡觉中', 'sick': '需要就医', 'thirsty': '想喝水', 'tired': '想休息',
+                'bored': '想被摸摸'}[state['mood']]
+        personality = {'curious': '好奇', 'gentle': '温顺', 'playful': '活泼'}[state['personality']]
+        self.life_details.set(f"饮水 {state['hydration']}/100 · 心情 {state['happiness']}/100\n"
+                              f"精力 {state['energy']}/100 · 健康 {state['health']}/100 · 性格 {personality}")
         self.needs.set(f"饱食 {state['satiety']}/100 · 便便 {state['poop']}/3 · {mood}")
         self.wallet.set(f"{state['coins']} 猫爪币")
         self.inventory.set(f"猫粮 {state['food']} 份 · 猫砂 {state['litter']} 份 · 零食 {state['snacks']} 份\n今日获得 {state['earned_today']}/40 币")
@@ -205,7 +237,7 @@ class Playground:
             self.animation = None
         self.screen.delete('all')
         s = self.state
-        if s.get('active'):
+        if s.get('active') and not s.get('sleeping'):
             word = s.get('word', '') if s['mode'] == 'en_zh' else ''
             font = self.word_font if word and self.word_font.measure(word) <= 208 else ('Microsoft YaHei UI', 18)
             self.screen.create_text(120, 102, text=word or '听题作答', width=208,
@@ -213,12 +245,43 @@ class Playground:
             self.screen.create_text(120, 218, text='请在电脑输入答案', width=224,
                                     font=('Microsoft YaHei UI', 12), fill='#493226')
         else:
-            file = 'sad.png' if s.get('mood') == 'hungry' else 'happy.png' if s.get('mood') == 'happy' else 'neutral.png'
-            self.screen.create_image(0, 0, image=self.images(file)[0], anchor='nw')
-            hint = '生日快乐！' if s.get('birthday_today') else '该铲屎啦' if s.get('poop') else ''
-            if hint:
-                self.screen.create_rectangle(40, 210, 200, 239, fill='#fff4df', outline='')
-                self.screen.create_text(120, 224, text=hint, fill='#493226')
+            self.draw_home(s)
+
+    def draw_home(self, s):
+        c = self.screen
+        sleeping = bool(s.get('sleeping'))
+        c.create_rectangle(0, 0, 240, 240, fill='#d7dfe6' if sleeping else '#fff1dc', outline='')
+        c.create_rectangle(0, 162, 240, 240, fill='#eed9be', outline='')
+        c.create_rectangle(181, 63, 215, 108, fill='#b9dde3', outline='white', width=4)
+        if s.get('room') == 2:
+            c.create_oval(53, 117, 187, 185, fill='#a5bfa9', outline='')
+        if s.get('room'):
+            c.create_oval(48, 157, 192, 185, fill='#dca568', outline='')
+        scale = 1 if s.get('care_days', 0) >= 21 else .9 if s.get('care_days', 0) >= 7 else .8
+        def ellipse(box, fill):
+            x1,y1,x2,y2 = box
+            c.create_oval(*(120+(x-120)*scale if i%2==0 else 178+(x-178)*scale
+                            for i,x in enumerate((x1,y1,x2,y2))), fill=fill, outline='')
+        ellipse((89, 117, 153, 179), '#eca24d')
+        ellipse((78, 70, 108, 115), '#eca24d')
+        ellipse((134, 70, 164, 115), '#eca24d')
+        ellipse((78, 90, 164, 154), '#ffbd69')
+        for x in (99, 138):
+            ellipse((x, 119, x+7, 122 if sleeping else 129), '#493226')
+        ellipse((116, 132, 125, 138), '#cf7c77')
+        if s.get('outfit') == 1:
+            c.create_rectangle(91, 151, 151, 159, fill='#d77d70', outline='')
+            c.create_rectangle(138, 156, 149, 172, fill='#d77d70', outline='')
+        if s.get('outfit') == 2:
+            c.create_rectangle(96, 75, 143, 93, fill='#6b91b3', outline='')
+            c.create_text(120, 84, text='★', fill='#ffe99a')
+        if s.get('owned', 0) & 3:
+            c.create_oval(188, 157, 206, 175, fill='#6b91b3', outline='')
+        c.create_text(120, 15, text=s.get('name') or '等你领养', fill='#493226')
+        c.create_text(120, 38, text=f"{s.get('growth', '')} · {s.get('age_days', 0)}天", fill='#493226')
+        c.create_text(120, 193, text=f"饱食 {s.get('satiety', 100)}  健康 {s.get('health', 100)}", fill='#493226')
+        hint = '需要就医' if s.get('health', 100) < 60 else '正在睡觉' if sleeping else '生日快乐！' if s.get('birthday_today') else '该铲屎啦' if s.get('poop') else '一起背单词吧'
+        c.create_text(120, 222, text=hint, fill='#493226')
 
     def images(self, filename):
         if filename not in self.frames:

@@ -19,7 +19,7 @@ def build_core():
         raise RuntimeError('需要电脑 C++ 编译器：安装 g++ / clang++，或通过 CXX 指定编译器路径。')
     sources = [ROOT / 'scripts/maomi_simulator_core.cc', BOARD / 'maomi_learning.cc']
     digest = hashlib.sha256(str(compiler).encode() + b''.join(
-        p.read_bytes() for p in sources + [BOARD / 'maomi_learning.h'])).hexdigest()[:16]
+        p.read_bytes() for p in sources + [BOARD / 'maomi_learning.h', BOARD / 'maomi_pet_life.h'])).hexdigest()[:16]
     executable = ROOT / '.cache/maomi-simulator' / (digest + ('.exe' if os.name == 'nt' else ''))
     environment = os.environ.copy()
     environment['PATH'] = str(compiler.parent) + os.pathsep + environment.get('PATH', '')

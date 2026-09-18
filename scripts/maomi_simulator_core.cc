@@ -68,7 +68,7 @@ maomi::LearningTime Time(int64_t epoch) {
     const auto value = static_cast<std::time_t>(epoch);
     const auto local = *std::localtime(&value);
     return {epoch, (local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday,
-            local.tm_mon + 1, local.tm_mday};
+            local.tm_mon + 1, local.tm_mday, local.tm_hour};
 }
 
 void Print(const maomi::LearningEngine& engine, maomi::LearningTime now,
@@ -84,6 +84,28 @@ void Print(const maomi::LearningEngine& engine, maomi::LearningTime now,
     };
     text("name", s.name);
     text("mood", engine.Mood(now));
+    const auto life = engine.GetLife(now);
+    number("sleeping", engine.IsSleeping(now));
+    number("health", life.health);
+    number("energy", life.energy);
+    number("hydration", life.hydration);
+    number("happiness", life.happiness);
+    number("outfit", life.outfit);
+    number("room", life.room);
+    number("owned", life.owned);
+    text("personality", maomi::PetPersonality(life));
+    std::cout << ",\"shop\":[";
+    bool first = true;
+    for (const auto& product : maomi::kPetItems) {
+        if (!first)
+            std::cout << ',';
+        first = false;
+        std::cout << "{\"id\":" << Quote(product.id) << ",\"name\":" << Quote(product.name)
+                  << ",\"price\":" << product.price
+                  << ",\"care_days_required\":" << int(product.care_days)
+                  << ",\"durable\":" << (product.mask ? "true" : "false") << '}';
+    }
+    std::cout << ']';
     text("mode", s.chinese_prompt ? "zh_en" : "en_zh");
     text("growth", s.care_days >= 21 ? "成年猫" : s.care_days >= 7 ? "少年猫" : "幼猫");
     number("epoch", now.epoch);
@@ -146,6 +168,8 @@ int main() {
                 result = engine.Care(args.at(1), now, s.revision);
             else if (op == "buy")
                 result = engine.Buy(args.at(1), std::stoi(args.at(2)), now, s.revision);
+            else if (op == "use")
+                result = engine.Use(args.at(1), now, s.revision);
             else if (op == "start")
                 result = engine.Start(args.at(1) == "zh_en", now, s.revision,
                                       args.size() > 2 && args[2] == "review_mastered");
